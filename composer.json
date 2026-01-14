@@ -1,0 +1,67 @@
+{
+    "name": "ldkafka/yii3-mcp-server",
+    "type": "library",
+    "description": "Model Context Protocol (MCP) server framework for Yii3 applications - enables AI assistants to interact with your app via custom tools",
+    "keywords": [
+        "yii",
+        "yii3",
+        "mcp",
+        "model-context-protocol",
+        "ai",
+        "github-copilot",
+        "tool-server",
+        "json-rpc",
+        "stdio"
+    ],
+    "homepage": "https://github.com/ldkafka/yii3-mcp-server",
+    "license": "BSD-3-Clause",
+    "support": {
+        "issues": "https://github.com/ldkafka/yii3-mcp-server/issues",
+        "source": "https://github.com/ldkafka/yii3-mcp-server",
+        "docs": "https://github.com/ldkafka/yii3-mcp-server/blob/main/README.md"
+    },
+    "authors": [
+        {
+            "name": "ldkafka",
+            "homepage": "https://github.com/ldkafka"
+        }
+    ],
+    "require": {
+        "php": "^8.1",
+        "yiisoft/yii-console": "^2.0",
+        "symfony/console": "^6.0|^7.0"
+    },
+    "require-dev": {
+        "codeception/codeception": "^5.2.2",
+        "codeception/module-asserts": "^3.1",
+        "codeception/module-cli": "^2.0.1",
+        "vimeo/psalm": "^5.26.1 || ^6.14.2",
+        "phpunit/phpunit": "^10.0|^11.0"
+    },
+    "suggest": {
+        "yiisoft/db": "Required for database query tools (MysqlQueryTool example)",
+        "yiisoft/db-mysql": "Required for MySQL database tools",
+        "yiisoft/cache-file": "Required for database schema caching",
+        "vlucas/phpdotenv": "Recommended for environment variable management"
+    },
+    "autoload": {
+        "psr-4": {
+            "YiiMcp\\McpServer\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "YiiMcp\\McpServer\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "branch-alias": {
+            "dev-main": "1.0.x-dev"
+        }
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}

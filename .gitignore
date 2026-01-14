@@ -1,0 +1,38 @@
+# Files for Package Distribution
+
+# Runtime directories (not needed in package)
+runtime/
+vendor/
+tests/_output/
+
+# Environment files (never distribute credentials)
+.env
+.env.local
+.env.*.local
+
+# IDE and editor files
+.idea/
+.vscode/
+nbproject/
+*.swp
+*.swo
+*~
+
+# Eclipse project files
+.buildpath
+.project
+.settings
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Composer lock (library should not include lock file)
+composer.lock
+
+# Build artifacts
+.phpunit.result.cache
+.psalm/cache/
+
+# Logs
+*.log
