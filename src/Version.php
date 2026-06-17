@@ -18,7 +18,7 @@ final class Version
      * Update this constant when releasing new versions.
      * Format: MAJOR.MINOR.PATCH (Semantic Versioning)
      */
-    public const VERSION = '1.0.6';
+    public const VERSION = '1.0.7';
 
     /**
      * Package name

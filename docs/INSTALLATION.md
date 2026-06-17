@@ -231,7 +231,7 @@ echo '{"method":"initialize","id":1}' | php yii mcp:serve
 Expected output (JSON):
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":[]},"serverInfo":{"name":"yii3-mcp-server","version":"1.0.0"}}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"yii3-mcp-server","version":"1.0.7"}}}
 ```
 
 ### Test 4: Tool Discovery

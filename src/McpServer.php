@@ -150,7 +150,13 @@ class McpServer
     {
         return [
             'protocolVersion' => '2024-11-05', // MCP protocol version
-            'capabilities' => ['tools' => []], // We support tools
+            // The `tools` capability MUST be a JSON object per the MCP spec, not an
+            // array. An empty PHP array (`[]`) json_encodes to `[]` (array), which
+            // strict clients (e.g. Claude Code) reject during initialize validation
+            // ("capabilities.tools: expected object, received array"). Lenient clients
+            // (Claude Desktop) tolerate it. Advertise the capability as an object;
+            // `listChanged: false` because we do not emit tools/list_changed notifications.
+            'capabilities' => ['tools' => ['listChanged' => false]],
             'serverInfo' => Version::getServerInfo()
         ];
     }
