@@ -52,10 +52,40 @@ final class StdioTransportTest extends TestCase
         $call = json_decode($lines[2], true);
         self::assertSame('{"message":"hi"}', $call['result']['content'][0]['text']);
 
-        // The server had no logger of its own, so it adopted the transport's.
-        self::assertSame($logger, $server->getLogger());
+        // The server had no logger of its own, so it used the transport's while serving.
         self::assertStringContainsString('started over stdio', $logger->records[0]['message']);
         self::assertStringContainsString('stopped', $logger->records[count($logger->records) - 1]['message']);
+        self::assertContains('warning', $logger->levels(), 'the parse error was logged through the transport logger');
+    }
+
+    public function testInjectedServerLoggerIsBypassedWhileServingAndRestoredAfterwards(): void
+    {
+        $appLogger = new ArrayLogger();   // stands in for a DI-autowired application logger
+        $transportLogger = new ArrayLogger();
+        $server = new McpServer([new EchoTool()], $appLogger);
+        $input = fopen('php://memory', 'w+');
+        fwrite($input, "not json\n");
+        rewind($input);
+
+        (new StdioTransport($server, $input, fopen('php://memory', 'w+'), $transportLogger))->run();
+
+        self::assertSame([], $appLogger->records, 'nothing may reach the application logger during a stdio run');
+        self::assertContains('warning', $transportLogger->levels());
+        self::assertSame($appLogger, $server->getLogger(), 'the original logger is restored after the run');
+    }
+
+    public function testServerLoggerCanBeKeptExplicitly(): void
+    {
+        $appLogger = new ArrayLogger();
+        $server = new McpServer([new EchoTool()], $appLogger);
+        $input = fopen('php://memory', 'w+');
+        fwrite($input, "not json\n");
+        rewind($input);
+
+        (new StdioTransport($server, $input, fopen('php://memory', 'w+'), new ArrayLogger(), useServerLogger: true))->run();
+
+        self::assertContains('warning', $appLogger->levels());
+        self::assertSame($appLogger, $server->getLogger());
     }
 
     public function testOutputContainsOnlyJsonLines(): void

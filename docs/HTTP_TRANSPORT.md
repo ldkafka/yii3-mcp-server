@@ -127,6 +127,10 @@ return [
 ];
 ```
 
+In production mode the Yii3 template caches the FastRoute dispatch data (for example in
+`runtime/cache/ro/routes-cache.bin`). After adding the route, clear `runtime/cache` or the endpoint
+keeps answering `404` from the stale cache.
+
 ### 4. Take CSRF and session middleware off this route
 
 The default `yiisoft/app` template runs `SessionMiddleware` and `CsrfTokenMiddleware` for **every**

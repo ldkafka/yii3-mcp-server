@@ -234,7 +234,7 @@ echo '{"jsonrpc":"2.0","method":"ping","id":2}' | php yii mcp:serve
 Expected output (JSON, one line per request):
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"yii3-mcp-server","version":"1.1.0","title":"Yii3 MCP Server"}}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"yii3-mcp-server","version":"1.1.1","title":"Yii3 MCP Server"}}}
 {"jsonrpc":"2.0","id":2,"result":{}}
 ```
 

@@ -4,6 +4,24 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] - 2026-09-14
+
+### Fixed
+
+- **Stdio transport is isolated from autowired application loggers.** Dependency-injection containers
+  (yiisoft/di among them) autowire an application `LoggerInterface` into the new `McpServer` logger
+  parameter, and the Yii3 application template's logger ships a `StreamTarget` writing to
+  `php://stdout`. In 1.1.0 that leaked log records into the JSON-RPC stream. `StdioTransport` now
+  routes the server's logging through its own logger (STDERR by default) for the duration of the
+  run and restores the previous logger afterwards. Pass `useServerLogger: true` to keep an
+  application logger whose targets are known to stay away from STDOUT.
+
+### Changed
+
+- Documentation: HTTP transport guide notes the FastRoute dispatch cache (`runtime/cache`) that must be
+  cleared after adding the `/mcp` route in production mode; editor guide gains a troubleshooting entry
+  for application loggers that write to STDOUT.
+
 ## [1.1.0] - 2026-09-14
 
 ### Added

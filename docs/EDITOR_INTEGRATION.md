@@ -445,6 +445,28 @@ echo '{"method":"initialize","id":1}' | php yii mcp:serve
 
 Should output ONLY valid JSON-RPC response, nothing else.
 
+### Issue: Application Log Records Appear on STDOUT
+
+**Symptom:** JSON-RPC responses are correct, but log lines such as
+`2026-01-01 12:00:00.000000 [info][application] ...` show up on STDOUT as well, and the client
+reports parse errors or ignores the server.
+
+**Cause:** the application's PSR-3 logger has a target that writes to `php://stdout`. The Yii3
+application template configures exactly that (`Yiisoft\Log\StreamTarget`) in
+`config/common/di/logger.php`, and DI containers autowire the application logger into `McpServer`.
+
+**Fix:** since 1.1.1 the stdio transport logs through its own STDERR logger while serving, so the
+application logger is bypassed automatically. Still point the stream target at `php://stderr` (or
+drop it) in applications that also serve the HTTP transport, because in a web request the same
+target appends to the response body:
+
+```php
+StreamTarget::class => [
+    'class' => StreamTarget::class,
+    '__construct()' => ['stream' => 'php://stderr'],
+],
+```
+
 ### Issue: Slow Response Times
 
 **Possible causes:**
