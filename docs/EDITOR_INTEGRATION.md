@@ -10,15 +10,18 @@ This guide explains how to integrate the Yii3 MCP Server with code editors and A
 
 1. [Overview](#overview)
 2. [GitHub Copilot Integration](#github-copilot-integration)
-3. [Deployment Scenarios](#deployment-scenarios)
-4. [Testing Your Integration](#testing-your-integration)
-5. [Troubleshooting](#troubleshooting)
+3. [Claude Code Integration](#claude-code-integration)
+4. [Deployment Scenarios](#deployment-scenarios)
+5. [Testing Your Integration](#testing-your-integration)
+6. [Troubleshooting](#troubleshooting)
 
 ---
 
 ## Overview
 
-The MCP Server communicates over **stdio** (standard input/output) using JSON-RPC 2.0. This means:
+The MCP Server can communicate over **stdio** (standard input/output, covered by this guide) or over
+**HTTP** (see [HTTP_TRANSPORT.md](HTTP_TRANSPORT.md) for serving and connecting to a remote endpoint).
+Over stdio, JSON-RPC 2.0 messages flow as follows:
 
 - **STDIN**: Receives requests from the AI assistant
 - **STDOUT**: Sends responses back to the AI assistant  
@@ -74,6 +77,59 @@ VS Code provides useful variables for paths:
 - `${workspaceFolderBasename}` - Name of workspace folder
 - `${file}` - Currently open file path
 - `${env:VARIABLE_NAME}` - Environment variable value
+
+---
+
+## Claude Code Integration
+
+Claude Code reads MCP servers from a project-level `.mcp.json` (shared with the team), or from the
+user configuration via `claude mcp add`.
+
+### stdio (local process)
+
+`.mcp.json` in the project root:
+
+```json
+{
+  "mcpServers": {
+    "my-yii3-tools": {
+      "command": "php",
+      "args": ["yii", "mcp:serve"]
+    }
+  }
+}
+```
+
+Equivalent CLI: `claude mcp add --scope project my-yii3-tools -- php yii mcp:serve`.
+
+The Docker, WSL and SSH scenarios below apply unchanged: whatever command produces a clean
+JSON-RPC stream on STDOUT can be used as `command`/`args`.
+
+### HTTP (remote endpoint)
+
+When the server is published over HTTP (see [HTTP_TRANSPORT.md](HTTP_TRANSPORT.md)), no local PHP,
+Docker or SSH hop is needed:
+
+```json
+{
+  "mcpServers": {
+    "my-yii3-tools": {
+      "type": "http",
+      "url": "https://example.test/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MCP_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+`${MCP_TOKEN}` is expanded from Claude Code's environment, so the secret stays out of the
+repository. Equivalent CLI:
+`claude mcp add --transport http my-yii3-tools https://example.test/mcp --header "Authorization: Bearer ${MCP_TOKEN}"`.
+
+Check the connection with `/mcp` inside Claude Code; the server's tools appear as
+`mcp__my-yii3-tools__<tool name>`.
 
 ---
 

@@ -67,6 +67,52 @@ interface McpToolInterface
 }
 ```
 
+### Optional: Tool Annotations
+
+Implement `McpToolAnnotationsInterface` as well to give clients hints about the tool (shown in
+`tools/list` as `title` and `annotations`):
+
+```php
+use YiiMcp\McpServer\Contract\McpToolAnnotationsInterface;
+
+final class QueryTool implements McpToolInterface, McpToolAnnotationsInterface
+{
+    public function getAnnotations(): array
+    {
+        return [
+            'title' => 'Query database',   // display name
+            'readOnlyHint' => true,        // does not modify anything
+            'destructiveHint' => false,
+            'idempotentHint' => true,      // repeating the call changes nothing
+            'openWorldHint' => false,      // no external systems involved
+        ];
+    }
+    // ...
+}
+```
+
+Annotations are advisory. Clients may use them to skip confirmation prompts for read-only tools,
+so never mark a tool `readOnlyHint` unless it really is.
+
+### Errors: return `isError` or just throw
+
+Two equivalent ways to report a failure to the assistant:
+
+```php
+// Explicit
+return ['isError' => true, 'content' => [['type' => 'text', 'text' => 'File not found']]];
+
+// Implicit: any exception thrown by execute() becomes the same kind of result
+throw new \RuntimeException('File not found');
+```
+
+Both are delivered as a tool *result* with `isError: true`, never as a JSON-RPC protocol error, so
+the assistant can read the message and try something else. Protocol errors are reserved for
+malformed requests (unknown tool name, invalid arguments, unknown method).
+
+Tools that return a bare array without a `content` key still work: the server wraps the array as
+JSON text. Prefer returning proper `content`, as shown throughout this guide.
+
 ---
 
 ## Step-by-Step: Your First Tool
@@ -561,11 +607,14 @@ class ExpensiveTool implements McpToolInterface
 Test with echo and pipe:
 
 ```bash
+# Liveness
+echo '{"jsonrpc":"2.0","method":"ping","id":0}' | php yii mcp:serve
+
 # Test tools/list
-echo '{"method":"tools/list","id":1}' | php yii mcp:serve
+echo '{"jsonrpc":"2.0","method":"tools/list","id":1}' | php yii mcp:serve
 
 # Test tools/call
-echo '{"method":"tools/call","id":2,"params":{"name":"read_file","arguments":{"path":"README.md"}}}' | php yii mcp:serve
+echo '{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"read_file","arguments":{"path":"README.md"}}}' | php yii mcp:serve
 ```
 
 ### Unit Tests
@@ -613,6 +662,27 @@ class FileReaderToolTest extends TestCase
         $this->assertTrue($result['isError']);
     }
 }
+```
+
+---
+
+### Testing Through the Protocol Layer
+
+`McpServer::dispatch()` runs a decoded JSON-RPC message without any transport, so a test can cover
+schema advertisement and the `tools/call` path end to end:
+
+```php
+$server = new \YiiMcp\McpServer\McpServer([new FileReaderTool($fixtures)]);
+
+$response = $server->dispatch([
+    'jsonrpc' => '2.0',
+    'id' => 1,
+    'method' => 'tools/call',
+    'params' => ['name' => 'read_file', 'arguments' => ['path' => 'test.txt']],
+]);
+
+$this->assertArrayNotHasKey('error', $response);
+$this->assertSame('text', $response['result']['content'][0]['type']);
 ```
 
 ---

@@ -6,7 +6,7 @@
 [![PHP Version](https://img.shields.io/badge/php-%5E8.1-blue.svg)](https://www.php.net/)
 [![Yii Version](https://img.shields.io/badge/yii-3.x-brightgreen.svg)](https://www.yiiframework.com/)
 
-A framework for building [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers in Yii3 applications. Enable AI assistants like GitHub Copilot to interact with your application through custom tools.
+A framework for building [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers in Yii3 applications. Enable AI assistants like GitHub Copilot, Claude Code and Claude Desktop to interact with your application through custom tools, over **stdio** (a local process) or **Streamable HTTP** (a remote endpoint).
 
 ---
 
@@ -27,9 +27,13 @@ A framework for building [Model Context Protocol (MCP)](https://modelcontextprot
 - **Framework, not an app** - Integrate into any Yii3 project
 - **Tool-based architecture** - Build custom tools by implementing `McpToolInterface`
 - **Simple API** - One interface (`McpToolInterface`) is all you need to create powerful AI tools
+- **Two transports** - stdio for editors that spawn a local process, and Streamable HTTP (PSR-15 handler + bearer-token middleware) for remote clients; both serve the same `McpServer`
+- **Spec-compliant core** - `initialize` with protocol version negotiation (`2024-11-05` to `2025-06-18`), `ping`, `tools/list` with annotations, `tools/call` with `isError` results, JSON-RPC batches and error codes
+- **PSR everywhere** - PSR-3 logging, PSR-7/15/17 HTTP; no framework lock-in beyond the console command
 - **Type-safe** - Full PHP 8.1+ type declarations and PHPDoc
 - **Production-ready** - Security patterns, error handling, validation
-- **Easy integration** - Works with VS Code, Cursor, and other MCP clients
+- **Tested** - PHPUnit suite, CI on PHP 8.1 to 8.4
+- **Easy integration** - Works with VS Code, Claude Code, Cursor, and other MCP clients
 - **Well-documented** - Comprehensive guides and examples
 
 ## Quick Start
@@ -214,10 +218,12 @@ class MyCustomTool implements McpToolInterface
 
     public function execute(array $arguments): array
     {
-        // Your tool logic here
+        // Your tool logic here. Return MCP content; throw on failure and the server
+        // reports it to the assistant as an `isError` result.
         return [
-            'result' => 'Tool executed successfully',
-            'data' => $arguments['input'],
+            'content' => [
+                ['type' => 'text', 'text' => 'Received: ' . $arguments['input']],
+            ],
         ];
     }
 }
@@ -251,7 +257,26 @@ Add to VS Code `settings.json`:
 }
 ```
 
+Or, for Claude Code, add to the project's `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "my-yii3-app": {
+      "command": "php",
+      "args": ["yii", "mcp:serve"]
+    }
+  }
+}
+```
+
 **That's it!** Your AI assistant can now use your tools.
+
+### 12. Optional: Serve Over HTTP
+
+The same server can be exposed as a remote endpoint (`POST /mcp`) protected by a bearer token, so
+assistants on other machines can use your tools without a local PHP process. See
+[docs/HTTP_TRANSPORT.md](docs/HTTP_TRANSPORT.md).
 
 ---
 
@@ -348,11 +373,11 @@ McpServer::class => [
 
 ## Documentation
 
-📖 **[Editor Integration](docs/EDITOR_INTEGRATION.md)** - VS Code, Docker, WSL, SSH setup  
+📖 **[Editor Integration](docs/EDITOR_INTEGRATION.md)** - VS Code, Claude Code, Docker, WSL, SSH setup  
 📖 **[Creating Tools](docs/CREATING_TOOLS.md)** - Build custom tools guide  
 📖 **[Installation](docs/INSTALLATION.md)** - Detailed setup instructions  
-📖 **[Deployment](docs/DEPLOYMENT.md)** - Production deployment strategies  
-📖 **[Examples](docs/EXAMPLES.md)** - Complete working examples  
+📖 **[HTTP Transport](docs/HTTP_TRANSPORT.md)** - Remote endpoint, authentication, reverse proxy, client config  
+📖 **[Changelog](CHANGELOG.md)** - Release notes  
 
 ---
 
@@ -383,7 +408,16 @@ McpServer::class => [
 }
 ```
 
-See [EDITOR_INTEGRATION.md](docs/EDITOR_INTEGRATION.md) for more scenarios.
+### Remote (HTTP)
+```json
+{
+  "type": "http",
+  "url": "https://example.test/mcp",
+  "headers": { "Authorization": "Bearer ${MCP_TOKEN}" }
+}
+```
+
+See [EDITOR_INTEGRATION.md](docs/EDITOR_INTEGRATION.md) for more scenarios and [HTTP_TRANSPORT.md](docs/HTTP_TRANSPORT.md) for serving the endpoint.
 
 ---
 
@@ -406,34 +440,48 @@ $allowedKeywords = ['SELECT', 'SHOW', 'DESCRIBE', 'EXPLAIN'];
 
 ## Requirements
 
-- **PHP:** 8.1 or higher
-- **Yii3:** yiisoft/yii-console ^2.0
-- **Optional:** Database extensions for DB tools
+- **PHP:** 8.1 or higher (`ext-json`)
+- **Yii3:** yiisoft/yii-console ^2.0 for the stdio command; any PSR-15 stack for HTTP
+- **PSR interfaces:** psr/log, psr/http-message, psr/http-factory, psr/http-server-handler, psr/http-server-middleware
+- **Optional:** yiisoft/db + yiisoft/db-mysql for the database tool, yiisoft/router to route the HTTP endpoint
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────┐
-│ AI Assistant │ (GitHub Copilot, Claude Desktop, etc.)
-└──────┬──────┘
-       │ JSON-RPC over stdio
-       ▼
-┌─────────────────┐
-│   McpServer     │  Framework core (this package)
-│  - Tool registry │
-│  - Protocol impl│
-└────────┬────────┘
-         │
-    ┌────┴────┬────────┬─────────┐
-    ▼         ▼        ▼         ▼
-┌────────┐ ┌────┐  ┌────┐   ┌────────┐
-│MySQL   │ │File│  │Cache│  │Custom  │
-│Query   │ │Read│  │Tool │  │Tools   │
-│Tool    │ │Tool│  │     │  │        │
-└────────┘ └────┘  └────┘   └────────┘
+┌─────────────┐           ┌─────────────┐
+│ AI Assistant │           │ AI Assistant │   GitHub Copilot, Claude Code, Claude Desktop, ...
+└──────┬──────┘           └──────┬──────┘
+       │ JSON-RPC over stdio     │ JSON-RPC over HTTPS (bearer token)
+       ▼                         ▼
+┌──────────────┐          ┌────────────────┐
+│StdioTransport│          │ McpHttpHandler │   PSR-15, behind BearerTokenMiddleware
+└──────┬───────┘          └───────┬────────┘
+       └────────────┬─────────────┘
+                    ▼
+          ┌─────────────────┐
+          │   McpServer     │   Framework core: tool registry + JSON-RPC dispatch
+          └────────┬────────┘
+                   │
+      ┌────────────┼──────────┬─────────────┐
+      ▼            ▼          ▼             ▼
+ ┌──────────┐ ┌──────────┐ ┌────────┐ ┌────────────┐
+ │MySQL     │ │File      │ │Cache   │ │Custom      │
+ │Query Tool│ │Read Tool │ │Tool    │ │Tools       │
+ └──────────┘ └──────────┘ └────────┘ └────────────┘
 ```
+
+---
+
+## Testing
+
+```bash
+composer install
+composer test   # PHPUnit
+```
+
+The suite covers the JSON-RPC dispatcher, both transports and the authentication middleware; CI runs it on PHP 8.1 to 8.4.
 
 ---
 

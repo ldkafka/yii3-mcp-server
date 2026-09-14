@@ -224,15 +224,22 @@ The server will block, waiting for input. Press `Ctrl+C` to stop.
 Test the MCP protocol manually:
 
 ```bash
-# Send initialize request
-echo '{"method":"initialize","id":1}' | php yii mcp:serve
+# Send initialize request (without a protocolVersion the server offers its latest)
+echo '{"jsonrpc":"2.0","method":"initialize","id":1}' | php yii mcp:serve
+
+# Liveness check
+echo '{"jsonrpc":"2.0","method":"ping","id":2}' | php yii mcp:serve
 ```
 
-Expected output (JSON):
+Expected output (JSON, one line per request):
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"yii3-mcp-server","version":"1.0.7"}}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"yii3-mcp-server","version":"1.1.0","title":"Yii3 MCP Server"}}}
+{"jsonrpc":"2.0","id":2,"result":{}}
 ```
+
+Startup and error diagnostics go to STDERR (`mcp [info] Yii3 MCP Server started over stdio ...`),
+never to STDOUT.
 
 ### Test 4: Tool Discovery
 
@@ -356,6 +363,21 @@ use App\Environment;
 ```
 
 > **Note:** This is a Yii3 framework requirement, not an MCP package requirement. MCP database configuration uses params.local.php as documented above.
+
+---
+
+### Issue: No output on Windows when redirecting a file into the server
+
+`php yii mcp:serve < requests.jsonl` prints nothing on Windows, while the same requests work from
+an editor. Symfony's console probes the terminal size through a child process before the command
+runs, and that child drains a file-redirected STDIN. Editors and MCP clients talk to the server
+through pipes, which are unaffected. For manual tests use a pipe or preset the terminal size:
+
+```powershell
+type requests.jsonl | php yii mcp:serve
+# or
+$env:COLUMNS=80; $env:LINES=24; php yii mcp:serve < requests.jsonl
+```
 
 ---
 
