@@ -4,60 +4,91 @@ declare(strict_types=1);
 
 namespace YiiMcp\McpServer;
 
+use JsonException;
+use Psr\Log\LoggerInterface;
+use Psr\Log\NullLogger;
+use stdClass;
+use Throwable;
+use YiiMcp\McpServer\Contract\McpToolAnnotationsInterface;
 use YiiMcp\McpServer\Contract\McpToolInterface;
+use YiiMcp\McpServer\Protocol\JsonRpc;
+use YiiMcp\McpServer\Protocol\JsonRpcException;
+use YiiMcp\McpServer\Protocol\ProtocolVersion;
+use YiiMcp\McpServer\Transport\StdioTransport;
+
+use function array_is_list;
+use function array_key_exists;
+use function is_array;
+use function is_bool;
+use function is_int;
+use function is_scalar;
+use function is_string;
+use function str_starts_with;
+use function trim;
 
 /**
- * MCP (Model Context Protocol) Server Implementation for Yii3
+ * Transport-agnostic MCP server core: a tool registry plus the JSON-RPC request dispatcher.
  *
- * This class implements a JSON-RPC 2.0 server that communicates over stdio (standard input/output)
- * to provide tools that AI assistants (like GitHub Copilot) can use to interact with your application.
+ * Feed it decoded messages with {@see dispatch()} / {@see dispatchPayload()}, or raw JSON with
+ * {@see handleJson()}, and it returns the response to send back, or null when nothing must be sent
+ * (notifications). Transports are separate: {@see StdioTransport} for editors that spawn a local
+ * process, and {@see Http\McpHttpHandler} for Streamable HTTP.
  *
- * The MCP protocol enables AI assistants to:
- * - Discover available tools via `tools/list`
- * - Execute tools with parameters via `tools/call`
- * - Receive structured responses with results or errors
+ * Supported methods: `initialize`, `ping`, `tools/list`, `tools/call`. Every `notifications/*`
+ * message is accepted and ignored. Unknown methods answer with a JSON-RPC "method not found"
+ * error. Tool failures are reported as `isError` results, as the specification requires, so the
+ * assistant can read the message and recover instead of losing the whole request.
  *
- * @package YiiMcp\McpServer
  * @see https://modelcontextprotocol.io/ MCP Protocol Specification
  *
- * @example Basic usage in a Yii3 console command:
+ * @example Serve over stdio from a console command:
  * ```php
- * $server = new McpServer([
- *     new MysqlQueryTool($db),
- *     new CustomTool(),
- * ]);
- * $server->run(); // Blocks and handles stdio communication
+ * $server = new McpServer([new MysqlQueryTool($db), new CustomTool()]);
+ * $server->run(); // blocks until STDIN closes
  * ```
  */
 class McpServer
 {
     /**
-     * Registry of available tools indexed by tool name
+     * Registry of available tools indexed by tool name.
      *
      * @var array<string, McpToolInterface>
      */
     private array $tools = [];
 
+    private LoggerInterface $logger;
+
+    private ?string $instructions;
+
+    /** @var array{name: string, version: string, title?: string} */
+    private array $serverInfo;
+
+    private ?string $negotiatedProtocolVersion = null;
+
     /**
-     * Initialize the MCP server with a collection of tools
-     *
-     * @param McpToolInterface[] $tools Array of tool instances to register
+     * @param McpToolInterface[] $tools Tools to register.
+     * @param LoggerInterface|null $logger Diagnostics sink; defaults to a null logger (the stdio
+     *        transport substitutes its STDERR logger when none was given).
+     * @param string|null $instructions Optional server instructions sent to the client on initialize.
+     * @param array{name: string, version: string, title?: string}|null $serverInfo Identity advertised
+     *        on initialize; defaults to this package's name and version.
      */
-    public function __construct(array $tools = [])
-    {
+    public function __construct(
+        array $tools = [],
+        ?LoggerInterface $logger = null,
+        ?string $instructions = null,
+        ?array $serverInfo = null,
+    ) {
         foreach ($tools as $tool) {
             $this->registerTool($tool);
         }
+        $this->logger = $logger ?? new NullLogger();
+        $this->instructions = $instructions;
+        $this->serverInfo = $serverInfo ?? Version::getServerInfo();
     }
 
     /**
-     * Register a tool with the server
-     *
-     * Tools are indexed by their name, so registering a tool with the same name
-     * will replace the previous registration.
-     *
-     * @param McpToolInterface $tool The tool instance to register
-     * @return void
+     * Register a tool. Registering another tool with the same name replaces the earlier one.
      */
     public function registerTool(McpToolInterface $tool): void
     {
@@ -65,177 +96,362 @@ class McpServer
     }
 
     /**
-     * Start the MCP server and handle incoming requests
-     *
-     * This method enters an infinite loop that:
-     * 1. Reads JSON-RPC requests from STDIN (one per line)
-     * 2. Processes each request according to MCP protocol
-     * 3. Sends JSON-RPC responses to STDOUT
-     * 4. Logs diagnostic messages to STDERR
-     *
-     * CRITICAL: STDOUT must contain ONLY valid JSON-RPC messages.
-     * All logging, debug output, or diagnostic messages MUST go to STDERR.
-     *
-     * The server runs until:
-     * - STDIN is closed (EOF received)
-     * - The process is terminated
-     *
-     * @return void This method blocks indefinitely
+     * @return array<string, McpToolInterface> Registered tools indexed by name.
+     */
+    public function getTools(): array
+    {
+        return $this->tools;
+    }
+
+    /**
+     * Whether a tool with the given name is registered.
+     */
+    public function hasTool(string $name): bool
+    {
+        return isset($this->tools[$name]);
+    }
+
+    /**
+     * The registered tool with the given name, or null.
+     */
+    public function getTool(string $name): ?McpToolInterface
+    {
+        return $this->tools[$name] ?? null;
+    }
+
+    /**
+     * Replace the diagnostics sink.
+     */
+    public function setLogger(LoggerInterface $logger): void
+    {
+        $this->logger = $logger;
+    }
+
+    /**
+     * The current diagnostics sink.
+     */
+    public function getLogger(): LoggerInterface
+    {
+        return $this->logger;
+    }
+
+    /**
+     * Set (or clear) the instructions sent to clients on initialize.
+     */
+    public function setInstructions(?string $instructions): void
+    {
+        $this->instructions = $instructions;
+    }
+
+    /**
+     * The instructions sent to clients on initialize, or null.
+     */
+    public function getInstructions(): ?string
+    {
+        return $this->instructions;
+    }
+
+    /**
+     * Protocol version agreed during the most recent initialize, or null before any handshake.
+     */
+    public function getNegotiatedProtocolVersion(): ?string
+    {
+        return $this->negotiatedProtocolVersion;
+    }
+
+    /**
+     * Serve over standard input/output until the client closes the pipe (kept for compatibility;
+     * equivalent to running a {@see StdioTransport}).
      */
     public function run(): void
     {
-        // Log to STDERR (not STDOUT - that's reserved for JSON-RPC responses)
-        fwrite(STDERR, "Yii3 MCP Server Started with " . count($this->tools) . " tools.\n");
-        
-        // Main protocol loop: read requests from STDIN, send responses to STDOUT
-        while (true) {
-            $line = fgets(STDIN);
-            if ($line === false) break; // EOF - client disconnected
-            
-            // Parse JSON-RPC request
-            $request = json_decode($line, true);
-            if (!$request) continue; // Invalid JSON - skip silently
-
-            $this->handleRequest($request);
-        }
+        (new StdioTransport($this))->run();
     }
 
     /**
-     * Route incoming JSON-RPC requests to appropriate handlers
+     * Handle one raw JSON document (a request, a notification, or a batch) end to end.
      *
-     * Handles the following MCP protocol methods:
-     * - `initialize`: Handshake to establish protocol version and capabilities
-     * - `notifications/initialized`: Client acknowledgment (no response needed)
-     * - `tools/list`: Return available tools and their schemas
-     * - `tools/call`: Execute a specific tool with arguments
-     *
-     * @param array<string, mixed> $request JSON-RPC request object
-     * @return void
+     * @return string|null Encoded JSON-RPC response (or batch of responses), or null when the input
+     *         contained only notifications and nothing must be sent back.
      */
-    private function handleRequest(array $request): void
+    public function handleJson(string $json): ?string
     {
-        $method = $request['method'] ?? '';
-        $id = $request['id'] ?? null; // Requests with ID require a response
+        try {
+            $payload = JsonRpc::decode($json);
+        } catch (JsonException $e) {
+            $this->logger->warning('Discarding message that is not valid JSON: {error}', ['error' => $e->getMessage()]);
+
+            return JsonRpc::encode(JsonRpc::error(null, JsonRpc::PARSE_ERROR, 'Parse error: ' . $e->getMessage()));
+        }
+
+        $response = $this->dispatchPayload($payload);
+
+        return $response === null ? null : JsonRpc::encode($response);
+    }
+
+    /**
+     * Dispatch a decoded payload that may be a single message or a JSON-RPC batch.
+     *
+     * @return array<mixed>|null One response, a list of responses for a batch, or null when there is
+     *         nothing to send back.
+     */
+    public function dispatchPayload(mixed $payload): ?array
+    {
+        if (!JsonRpc::isBatch($payload)) {
+            return $this->dispatch($payload);
+        }
+
+        $responses = [];
+        foreach ($payload as $message) {
+            $response = $this->dispatch($message);
+            if ($response !== null) {
+                $responses[] = $response;
+            }
+        }
+
+        return $responses === [] ? null : $responses;
+    }
+
+    /**
+     * Dispatch one decoded JSON-RPC message.
+     *
+     * Requests (messages with an id) always produce a response. Notifications (no id) never do,
+     * even when they fail, exactly as JSON-RPC 2.0 prescribes. Structurally invalid messages get an
+     * "Invalid Request" error whose id is null when no usable id was present.
+     *
+     * @return array<mixed>|null Response envelope, or null for notifications.
+     */
+    public function dispatch(mixed $message): ?array
+    {
+        if (!is_array($message) || $message === [] || array_is_list($message)) {
+            return JsonRpc::error(null, JsonRpc::INVALID_REQUEST, 'Invalid Request: expected a JSON-RPC request object.');
+        }
+
+        $id = $message['id'] ?? null;
+        if ($id !== null && !is_int($id) && !is_string($id)) {
+            return JsonRpc::error(null, JsonRpc::INVALID_REQUEST, 'Invalid Request: "id" must be a string or an integer.');
+        }
+
+        if (array_key_exists('jsonrpc', $message) && $message['jsonrpc'] !== JsonRpc::VERSION) {
+            return JsonRpc::error($id, JsonRpc::INVALID_REQUEST, 'Invalid Request: "jsonrpc" must be "2.0".');
+        }
+
+        $method = $message['method'] ?? null;
+        if (!is_string($method) || $method === '') {
+            return JsonRpc::error($id, JsonRpc::INVALID_REQUEST, 'Invalid Request: "method" must be a non-empty string.');
+        }
+
+        if (str_starts_with($method, 'notifications/')) {
+            $this->logger->debug('Notification received: {method}', ['method' => $method]);
+
+            return null;
+        }
+
+        $params = $message['params'] ?? [];
+        if (!is_array($params)) {
+            return $this->errorFor($id, JsonRpcException::invalidParams('"params" must be an object.'));
+        }
 
         try {
-            // Route to appropriate handler based on method name
             $result = match ($method) {
-                'initialize' => $this->handleInitialize(),
-                'notifications/initialized' => null, // Notification - no response
-                'tools/list' => $this->handleListTools(),
-                'tools/call' => $this->handleCallTool($request['params'] ?? []),
-                default => null // Unknown method - ignore
+                'initialize' => $this->handleInitialize($params),
+                'ping' => new stdClass(),
+                'tools/list' => $this->handleListTools($params),
+                'tools/call' => $this->handleCallTool($params),
+                default => throw JsonRpcException::methodNotFound($method),
             };
+        } catch (JsonRpcException $e) {
+            $this->logger->warning('{method} rejected: {error}', ['method' => $method, 'error' => $e->getMessage()]);
 
-            // Send response only if request had an ID (requests without ID are notifications)
-            if ($id !== null) {
-                $this->sendResponse($id, $result);
-            }
-        } catch (\Throwable $e) {
-            // Log errors to STDERR for debugging
-            fwrite(STDERR, "Error: " . $e->getMessage() . "\n");
-            if ($id !== null) $this->sendError($id, $e->getMessage());
+            return $this->errorFor($id, $e);
+        } catch (Throwable $e) {
+            $this->logger->error('{method} failed unexpectedly: {error}', [
+                'method' => $method,
+                'error' => $e->getMessage(),
+                'exception' => $e,
+            ]);
+
+            return $id === null ? null : JsonRpc::error($id, JsonRpc::INTERNAL_ERROR, $e->getMessage());
         }
+
+        return $id === null ? null : JsonRpc::result($id, $result);
     }
 
     /**
-     * Handle the `initialize` request - MCP protocol handshake
-     *
-     * Returns server capabilities and protocol version to the client.
-     * This is the first request sent by MCP clients.
-     *
-     * @return array{protocolVersion: string, capabilities: array, serverInfo: array}
+     * Error response for a request, or nothing for a notification.
      */
-    private function handleInitialize(): array
+    private function errorFor(int|string|null $id, JsonRpcException $exception): ?array
     {
-        return [
-            'protocolVersion' => '2024-11-05', // MCP protocol version
-            // The `tools` capability MUST be a JSON object per the MCP spec, not an
-            // array. An empty PHP array (`[]`) json_encodes to `[]` (array), which
-            // strict clients (e.g. Claude Code) reject during initialize validation
-            // ("capabilities.tools: expected object, received array"). Lenient clients
-            // (Claude Desktop) tolerate it. Advertise the capability as an object;
-            // `listChanged: false` because we do not emit tools/list_changed notifications.
+        if ($id === null) {
+            return null;
+        }
+
+        return JsonRpc::error($id, $exception->getCode(), $exception->getMessage(), $exception->getData());
+    }
+
+    /**
+     * `initialize`: negotiate the protocol version and advertise capabilities.
+     *
+     * @param array<string, mixed> $params
+     * @return array{protocolVersion: string, capabilities: array<string, mixed>, serverInfo: array<string, string>, instructions?: string}
+     */
+    private function handleInitialize(array $params): array
+    {
+        $requested = $params['protocolVersion'] ?? null;
+        $requested = is_string($requested) ? $requested : null;
+        $version = ProtocolVersion::negotiate($requested);
+        $this->negotiatedProtocolVersion = $version;
+
+        $client = $params['clientInfo'] ?? null;
+        $clientName = is_array($client)
+            ? trim((string) ($client['name'] ?? 'unknown') . ' ' . (string) ($client['version'] ?? ''))
+            : 'unknown';
+        $this->logger->info('Client "{client}" initialized: requested protocol {requested}, using {version}.', [
+            'client' => $clientName,
+            'requested' => $requested ?? 'none',
+            'version' => $version,
+        ]);
+
+        $result = [
+            'protocolVersion' => $version,
+            // `tools` must be a JSON object. A bare `[]` encodes as an array, which strict clients
+            // reject during initialize validation.
             'capabilities' => ['tools' => ['listChanged' => false]],
-            'serverInfo' => Version::getServerInfo()
+            'serverInfo' => $this->serverInfo,
         ];
+        if ($this->instructions !== null && $this->instructions !== '') {
+            $result['instructions'] = $this->instructions;
+        }
+
+        return $result;
     }
 
     /**
-     * Handle the `tools/list` request - return available tools
+     * `tools/list`: describe every registered tool.
      *
-     * Returns a list of all registered tools with their:
-     * - Name (unique identifier)
-     * - Description (human-readable purpose)
-     * - Input schema (JSON Schema for validation)
+     * A `cursor` parameter is accepted for forward compatibility, but all tools always fit in one
+     * page, so no `nextCursor` is returned.
      *
-     * @return array{tools: array<int, array{name: string, description: string, inputSchema: array}>}
+     * @param array<string, mixed> $params
+     * @return array{tools: list<array<string, mixed>>}
      */
-    private function handleListTools(): array
+    private function handleListTools(array $params): array
     {
-        $toolDefinitions = [];
+        $definitions = [];
         foreach ($this->tools as $tool) {
-            $toolDefinitions[] = [
+            $definition = [
                 'name' => $tool->getName(),
                 'description' => $tool->getDescription(),
-                'inputSchema' => $tool->getInputSchema(),
+                'inputSchema' => self::normalizeInputSchema($tool->getInputSchema()),
             ];
+            if ($tool instanceof McpToolAnnotationsInterface) {
+                $annotations = $tool->getAnnotations();
+                $title = $annotations['title'] ?? null;
+                if (is_string($title) && $title !== '') {
+                    $definition['title'] = $title;
+                }
+                if ($annotations !== []) {
+                    $definition['annotations'] = $annotations;
+                }
+            }
+            $definitions[] = $definition;
         }
-        return ['tools' => $toolDefinitions];
+
+        return ['tools' => $definitions];
     }
 
     /**
-     * Handle the `tools/call` request - execute a tool
+     * `tools/call`: run one tool.
      *
-     * Looks up the requested tool by name and executes it with provided arguments.
-     * Returns the tool's response directly.
+     * Bad parameters and unknown tool names are protocol errors. Anything thrown by the tool itself
+     * becomes an `isError` result carrying the exception message.
      *
-     * @param array<string, mixed> $params Request parameters containing 'name' and 'arguments'
-     * @return array Tool execution result
-     * @throws \Exception If the requested tool is not registered
+     * @param array<string, mixed> $params
+     * @return array<string, mixed> MCP tool result.
      */
     private function handleCallTool(array $params): array
     {
-        $name = $params['name'] ?? '';
-        $args = $params['arguments'] ?? [];
-
-        if (!isset($this->tools[$name])) {
-            throw new \Exception("Tool not found: $name");
+        $name = $params['name'] ?? null;
+        if (!is_string($name) || $name === '') {
+            throw JsonRpcException::invalidParams('"name" must be a non-empty string.');
         }
 
-        return $this->tools[$name]->execute($args);
+        $arguments = $params['arguments'] ?? [];
+        if (!is_array($arguments)) {
+            throw JsonRpcException::invalidParams('"arguments" must be an object.');
+        }
+
+        $tool = $this->tools[$name] ?? null;
+        if ($tool === null) {
+            throw JsonRpcException::invalidParams('Unknown tool: ' . $name);
+        }
+
+        try {
+            $result = $tool->execute($arguments);
+        } catch (Throwable $e) {
+            $this->logger->error('Tool {tool} failed: {error}', [
+                'tool' => $name,
+                'error' => $e->getMessage(),
+                'exception' => $e,
+            ]);
+
+            return ['isError' => true, 'content' => [['type' => 'text', 'text' => $e->getMessage()]]];
+        }
+
+        return self::normalizeToolResult($result);
     }
 
     /**
-     * Send a successful JSON-RPC 2.0 response to STDOUT
+     * Make sure a schema encodes as a JSON Schema object: `type` present and `properties` never an
+     * empty JSON array (strict clients reject `"properties": []`).
      *
-     * @param int|string|null $id Request ID from the original request
-     * @param mixed $result Result data to return to the client
-     * @return void
+     * @param array<string, mixed> $schema
+     * @return array<string, mixed>
      */
-    private function sendResponse($id, $result): void
+    private static function normalizeInputSchema(array $schema): array
     {
-        echo json_encode(['jsonrpc' => '2.0', 'id' => $id, 'result' => $result]) . "\n";
-        flush(); // Ensure immediate delivery to client
+        if (!isset($schema['type'])) {
+            $schema = ['type' => 'object'] + $schema;
+        }
+        if (!isset($schema['properties']) || $schema['properties'] === []) {
+            $schema['properties'] = new stdClass();
+        }
+
+        return $schema;
     }
 
     /**
-     * Send a JSON-RPC 2.0 error response to STDOUT
+     * Coerce whatever a tool returned into a valid MCP tool result.
      *
-     * @param int|string|null $id Request ID from the original request
-     * @param string $message Error message to send to the client
-     * @return void
+     * Tools that return a bare array (no `content`) get it wrapped as JSON text, so an assistant
+     * still sees the data instead of an empty result.
+     *
+     * @param array<string, mixed> $result
+     * @return array<string, mixed>
      */
-    private function sendError($id, $message): void
+    private static function normalizeToolResult(array $result): array
     {
-        echo json_encode([
-            'jsonrpc' => '2.0', 
-            'id' => $id, 
-            'error' => [
-                'code' => -32603, // Internal error code per JSON-RPC 2.0 spec
-                'message' => $message
-            ]
-        ]) . "\n";
-        flush(); // Ensure immediate delivery to client
+        if (!array_key_exists('content', $result)) {
+            if (array_key_exists('structuredContent', $result)) {
+                $result['content'] = [['type' => 'text', 'text' => JsonRpc::encode($result['structuredContent'])]];
+
+                return $result;
+            }
+
+            return ['content' => [['type' => 'text', 'text' => JsonRpc::encode($result)]]];
+        }
+
+        $content = $result['content'];
+        if (!is_array($content)) {
+            $result['content'] = [['type' => 'text', 'text' => is_scalar($content) ? (string) $content : JsonRpc::encode($content)]];
+        } elseif ($content !== [] && !array_is_list($content)) {
+            $result['content'] = [$content];
+        }
+
+        if (array_key_exists('isError', $result) && !is_bool($result['isError'])) {
+            $result['isError'] = (bool) $result['isError'];
+        }
+
+        return $result;
     }
 }

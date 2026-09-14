@@ -32,6 +32,7 @@ composer.lock
 
 # Build artifacts
 .phpunit.result.cache
+.phpunit.cache/
 .psalm/cache/
 
 # Logs
