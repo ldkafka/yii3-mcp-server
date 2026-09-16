@@ -4,6 +4,38 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-09-16
+
+### Added
+
+- **Argument validation** (`YiiMcp\McpServer\Protocol\ArgumentValidator`): `tools/call` arguments are
+  checked against the tool's `inputSchema` before the tool runs. Missing `required` properties,
+  properties rejected by `additionalProperties: false`, values outside an `enum`, clear `type`
+  mismatches and numbers outside `minimum`/`maximum` are answered with `-32602 Invalid params`, with
+  the violations listed in `error.data.violations`, as the specification prescribes. Lenient by
+  design (numeric strings for numbers, boolean-like strings for booleans) and limited to the top
+  level of the schema; arguments reach the tool unmodified. Enabled by default; opt out with the new
+  `McpServer` constructor parameter `validateArguments` or `setValidateArguments(false)`.
+- **`outputSchema`** support (protocol 2025-06-18) through the optional
+  `YiiMcp\McpServer\Contract\McpToolOutputSchemaInterface`, advertised in `tools/list` and
+  normalised like input schemas.
+- **Tool-call logging**: every `tools/call` is logged at info level with the tool name, duration
+  in milliseconds and the size of the returned content; failures are logged with their duration too.
+- `McpServer::isValidatingArguments()`, `setValidateArguments()`.
+
+### Fixed
+
+- **CORS preflight no longer needs a token.** `BearerTokenMiddleware` let `OPTIONS` requests hit
+  the 401 path, but browsers never attach `Authorization` to a preflight, so browser-hosted clients
+  could never reach the endpoint. `OPTIONS` now passes through to `McpHttpHandler`, which answers
+  with an empty `204`.
+- `StderrLogger` imports `str_contains` explicitly.
+
+### Changed
+
+- Release history: 1.1.0 and 1.1.1 were re-tagged on rewritten commits after publication, which
+  Packagist does not accept; 1.2.0 is the first release cut on the current history. Require `^1.2`.
+
 ## [1.1.1] - 2026-09-14
 
 ### Fixed

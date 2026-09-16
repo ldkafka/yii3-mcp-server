@@ -18,6 +18,7 @@ use function get_class;
 use function is_scalar;
 use function json_encode;
 use function sprintf;
+use function str_contains;
 use function strtr;
 
 /**

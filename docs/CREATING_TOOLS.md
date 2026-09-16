@@ -94,6 +94,49 @@ final class QueryTool implements McpToolInterface, McpToolAnnotationsInterface
 Annotations are advisory. Clients may use them to skip confirmation prompts for read-only tools,
 so never mark a tool `readOnlyHint` unless it really is.
 
+### Optional: Output Schema
+
+Since protocol revision 2025-06-18 a tool may describe its structured result. Implement
+`McpToolOutputSchemaInterface` and return matching data under `structuredContent`; the server
+advertises the schema in `tools/list` and adds a JSON text fallback to `content` when the tool
+does not provide one, so older clients still see the data:
+
+```php
+use YiiMcp\McpServer\Contract\McpToolOutputSchemaInterface;
+
+final class StatsTool implements McpToolInterface, McpToolOutputSchemaInterface
+{
+    public function getOutputSchema(): array
+    {
+        return ['type' => 'object', 'properties' => ['count' => ['type' => 'integer']], 'required' => ['count']];
+    }
+
+    public function execute(array $args): array
+    {
+        return ['structuredContent' => ['count' => 42]];
+    }
+    // ...
+}
+```
+
+### Arguments are validated before `execute()` runs
+
+The server checks the arguments of every `tools/call` against your `inputSchema` and answers
+clear mismatches with a JSON-RPC `-32602 Invalid params` error that lists the violations (in
+`error.data.violations`), so the assistant can correct the call. The check covers:
+
+- `required` properties that are missing;
+- properties not listed in `properties` when `additionalProperties` is `false`;
+- `type` (`string`, `integer`, `number`, `boolean`, `array`, `object`, `null`, or a list of them);
+- `enum` membership;
+- `minimum` / `maximum` on numbers.
+
+It is lenient on purpose: assistants often send `"50"` for an integer or `"true"` for a boolean,
+and those pass. Only the top level of the schema is inspected, and the arguments reach your tool
+unmodified, so keep casting (`(int) $args['limit']`) and validating anything deeper yourself.
+Disable it per server with `new McpServer($tools, validateArguments: false)` or
+`$server->setValidateArguments(false)`.
+
 ### Errors: return `isError` or just throw
 
 Two equivalent ways to report a failure to the assistant:

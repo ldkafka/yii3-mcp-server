@@ -20,6 +20,7 @@ use function array_values;
 use function hash_equals;
 use function preg_match;
 use function sprintf;
+use function strtoupper;
 
 /**
  * Static bearer-token authentication for the HTTP transport.
@@ -28,6 +29,9 @@ use function sprintf;
  * constant time and answers `401` with a `WWW-Authenticate` challenge otherwise. Accepting several
  * tokens at once lets you rotate a token without downtime. Keep tokens out of version control
  * (environment variables, Docker secrets, a local params file) and always serve over TLS.
+ *
+ * `OPTIONS` requests pass through unauthenticated: browsers never attach `Authorization` to a CORS
+ * preflight, and the endpoint answers a preflight with an empty `204` that reveals nothing.
  */
 final class BearerTokenMiddleware implements MiddlewareInterface
 {
@@ -66,6 +70,10 @@ final class BearerTokenMiddleware implements MiddlewareInterface
      */
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
+        if (strtoupper($request->getMethod()) === 'OPTIONS') {
+            return $handler->handle($request);
+        }
+
         $presented = self::extractToken($request->getHeaderLine('Authorization'));
         if ($presented !== null) {
             foreach ($this->tokens as $token) {

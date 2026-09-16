@@ -11,6 +11,8 @@ use stdClass;
 use Throwable;
 use YiiMcp\McpServer\Contract\McpToolAnnotationsInterface;
 use YiiMcp\McpServer\Contract\McpToolInterface;
+use YiiMcp\McpServer\Contract\McpToolOutputSchemaInterface;
+use YiiMcp\McpServer\Protocol\ArgumentValidator;
 use YiiMcp\McpServer\Protocol\JsonRpc;
 use YiiMcp\McpServer\Protocol\JsonRpcException;
 use YiiMcp\McpServer\Protocol\ProtocolVersion;
@@ -18,12 +20,16 @@ use YiiMcp\McpServer\Transport\StdioTransport;
 
 use function array_is_list;
 use function array_key_exists;
+use function hrtime;
+use function implode;
 use function is_array;
 use function is_bool;
 use function is_int;
 use function is_scalar;
 use function is_string;
+use function round;
 use function str_starts_with;
+use function strlen;
 use function trim;
 
 /**
@@ -37,7 +43,9 @@ use function trim;
  * Supported methods: `initialize`, `ping`, `tools/list`, `tools/call`. Every `notifications/*`
  * message is accepted and ignored. Unknown methods answer with a JSON-RPC "method not found"
  * error. Tool failures are reported as `isError` results, as the specification requires, so the
- * assistant can read the message and recover instead of losing the whole request.
+ * assistant can read the message and recover instead of losing the whole request. Arguments are
+ * checked against the tool's input schema first ({@see ArgumentValidator}); clear mismatches are
+ * answered with `-32602 Invalid params` listing the violations, as the specification prescribes.
  *
  * @see https://modelcontextprotocol.io/ MCP Protocol Specification
  *
@@ -65,6 +73,8 @@ class McpServer
 
     private ?string $negotiatedProtocolVersion = null;
 
+    private bool $validateArguments;
+
     /**
      * @param McpToolInterface[] $tools Tools to register.
      * @param LoggerInterface|null $logger Diagnostics sink; defaults to a null logger (the stdio
@@ -72,12 +82,15 @@ class McpServer
      * @param string|null $instructions Optional server instructions sent to the client on initialize.
      * @param array{name: string, version: string, title?: string}|null $serverInfo Identity advertised
      *        on initialize; defaults to this package's name and version.
+     * @param bool $validateArguments Check `tools/call` arguments against the tool's input schema
+     *        and reject clear mismatches with `-32602` before the tool runs (see {@see ArgumentValidator}).
      */
     public function __construct(
         array $tools = [],
         ?LoggerInterface $logger = null,
         ?string $instructions = null,
         ?array $serverInfo = null,
+        bool $validateArguments = true,
     ) {
         foreach ($tools as $tool) {
             $this->registerTool($tool);
@@ -85,6 +98,7 @@ class McpServer
         $this->logger = $logger ?? new NullLogger();
         $this->instructions = $instructions;
         $this->serverInfo = $serverInfo ?? Version::getServerInfo();
+        $this->validateArguments = $validateArguments;
     }
 
     /**
@@ -149,6 +163,22 @@ class McpServer
     public function getInstructions(): ?string
     {
         return $this->instructions;
+    }
+
+    /**
+     * Enable or disable argument validation for `tools/call`.
+     */
+    public function setValidateArguments(bool $validate): void
+    {
+        $this->validateArguments = $validate;
+    }
+
+    /**
+     * Whether `tools/call` arguments are validated against the tool's input schema.
+     */
+    public function isValidatingArguments(): bool
+    {
+        return $this->validateArguments;
     }
 
     /**
@@ -354,6 +384,12 @@ class McpServer
                     $definition['annotations'] = $annotations;
                 }
             }
+            if ($tool instanceof McpToolOutputSchemaInterface) {
+                $outputSchema = $tool->getOutputSchema();
+                if ($outputSchema !== []) {
+                    $definition['outputSchema'] = self::normalizeInputSchema($outputSchema);
+                }
+            }
             $definitions[] = $definition;
         }
 
@@ -363,8 +399,10 @@ class McpServer
     /**
      * `tools/call`: run one tool.
      *
-     * Bad parameters and unknown tool names are protocol errors. Anything thrown by the tool itself
-     * becomes an `isError` result carrying the exception message.
+     * Bad parameters, unknown tool names and (when enabled) arguments that violate the tool's input
+     * schema are protocol errors. Anything thrown by the tool itself becomes an `isError` result
+     * carrying the exception message. Every call is logged at info level with its duration and
+     * result size, so an operator can see what assistants are doing.
      *
      * @param array<string, mixed> $params
      * @return array<string, mixed> MCP tool result.
@@ -386,11 +424,23 @@ class McpServer
             throw JsonRpcException::invalidParams('Unknown tool: ' . $name);
         }
 
+        if ($this->validateArguments) {
+            $violations = ArgumentValidator::validate($tool->getInputSchema(), $arguments);
+            if ($violations !== []) {
+                throw JsonRpcException::invalidParams(
+                    'Arguments for tool "' . $name . '" are invalid: ' . implode(' ', $violations),
+                    ['tool' => $name, 'violations' => $violations]
+                );
+            }
+        }
+
+        $started = hrtime(true);
         try {
-            $result = $tool->execute($arguments);
+            $result = self::normalizeToolResult($tool->execute($arguments));
         } catch (Throwable $e) {
-            $this->logger->error('Tool {tool} failed: {error}', [
+            $this->logger->error('Tool {tool} failed after {ms} ms: {error}', [
                 'tool' => $name,
+                'ms' => self::elapsedMs($started),
                 'error' => $e->getMessage(),
                 'exception' => $e,
             ]);
@@ -398,7 +448,44 @@ class McpServer
             return ['isError' => true, 'content' => [['type' => 'text', 'text' => $e->getMessage()]]];
         }
 
-        return self::normalizeToolResult($result);
+        $this->logger->info('Tool {tool} {outcome} in {ms} ms, {bytes} bytes of content.', [
+            'tool' => $name,
+            'outcome' => !empty($result['isError']) ? 'returned an error' : 'completed',
+            'ms' => self::elapsedMs($started),
+            'bytes' => self::contentSize($result),
+        ]);
+
+        return $result;
+    }
+
+    /**
+     * Milliseconds elapsed since an {@see hrtime()} mark, with one decimal.
+     */
+    private static function elapsedMs(int|float $started): float
+    {
+        return round((hrtime(true) - $started) / 1_000_000, 1);
+    }
+
+    /**
+     * Approximate size of a tool result: the text of its content blocks (binary blocks count their
+     * base64 payload). Cheap, and close enough to what the assistant will ingest.
+     *
+     * @param array<string, mixed> $result
+     */
+    private static function contentSize(array $result): int
+    {
+        $bytes = 0;
+        foreach ((array) ($result['content'] ?? []) as $block) {
+            if (is_array($block)) {
+                foreach (['text', 'data'] as $key) {
+                    if (isset($block[$key]) && is_string($block[$key])) {
+                        $bytes += strlen($block[$key]);
+                    }
+                }
+            }
+        }
+
+        return $bytes;
     }
 
     /**

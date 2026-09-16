@@ -105,6 +105,19 @@ final class BearerTokenMiddlewareTest extends TestCase
         self::assertSame('Bearer realm="My \"App\""', $response->getHeaderLine('WWW-Authenticate'));
     }
 
+    public function testCorsPreflightPassesWithoutAToken(): void
+    {
+        $preflight = (new ServerRequestFactory())->createServerRequest('OPTIONS', 'https://example.test/mcp')
+            ->withHeader('Origin', 'https://app.test')
+            ->withHeader('Access-Control-Request-Method', 'POST');
+
+        $response = $this->middleware()->process($preflight, $this->next());
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertNotNull($this->seen);
+        self::assertNull($this->seen->getAttribute(BearerTokenMiddleware::ATTRIBUTE_AUTHENTICATED), 'a preflight is not authenticated');
+    }
+
     public function testEmptyTokenListIsRejectedAtConstruction(): void
     {
         $this->expectException(InvalidArgumentException::class);

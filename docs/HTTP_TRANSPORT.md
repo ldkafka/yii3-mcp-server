@@ -43,7 +43,7 @@ built-in server alike.
 | `POST` with an unsupported `MCP-Protocol-Version` header | `400` |
 | Any request from a browser `Origin` that is not allow-listed | `403` |
 | `GET`, `DELETE`, anything else | `405` with `Allow: POST, OPTIONS` |
-| `OPTIONS` (CORS preflight) | `204` |
+| `OPTIONS` (CORS preflight) | `204`; passes `BearerTokenMiddleware` unauthenticated, because browsers never send `Authorization` on a preflight |
 
 `GET` returning `405` is explicitly permitted by the specification for servers that do not push
 server-initiated messages, and no `Mcp-Session-Id` is issued because nothing needs a session.

@@ -18,7 +18,7 @@ final class Version
      * Update this constant when releasing new versions.
      * Format: MAJOR.MINOR.PATCH (Semantic Versioning)
      */
-    public const VERSION = '1.1.1';
+    public const VERSION = '1.2.0';
 
     /**
      * Package name (the `serverInfo.name` advertised on initialize)

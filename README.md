@@ -28,7 +28,9 @@ A framework for building [Model Context Protocol (MCP)](https://modelcontextprot
 - **Tool-based architecture** - Build custom tools by implementing `McpToolInterface`
 - **Simple API** - One interface (`McpToolInterface`) is all you need to create powerful AI tools
 - **Two transports** - stdio for editors that spawn a local process, and Streamable HTTP (PSR-15 handler + bearer-token middleware) for remote clients; both serve the same `McpServer`
-- **Spec-compliant core** - `initialize` with protocol version negotiation (`2024-11-05` to `2025-06-18`), `ping`, `tools/list` with annotations, `tools/call` with `isError` results, JSON-RPC batches and error codes
+- **Spec-compliant core** - `initialize` with protocol version negotiation (`2024-11-05` to `2025-06-18`), `ping`, `tools/list` with annotations and `outputSchema`, `tools/call` with `isError` results, JSON-RPC batches and error codes
+- **Argument validation** - `tools/call` arguments are checked against the tool's `inputSchema` (required, enum, types, ranges; lenient about numeric strings) and clear mismatches are answered with `-32602` listing the violations, before the tool runs
+- **Observable** - every tool call is logged with its duration and result size; failures with their exception
 - **PSR everywhere** - PSR-3 logging, PSR-7/15/17 HTTP; no framework lock-in beyond the console command
 - **Type-safe** - Full PHP 8.1+ type declarations and PHPDoc
 - **Production-ready** - Security patterns, error handling, validation

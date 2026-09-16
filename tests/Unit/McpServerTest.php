@@ -12,6 +12,7 @@ use YiiMcp\McpServer\Tests\Support\ArrayLogger;
 use YiiMcp\McpServer\Tests\Support\BrokenSchemaTool;
 use YiiMcp\McpServer\Tests\Support\EchoTool;
 use YiiMcp\McpServer\Tests\Support\RawArrayTool;
+use YiiMcp\McpServer\Tests\Support\StructuredTool;
 use YiiMcp\McpServer\Tests\Support\ThrowingTool;
 use YiiMcp\McpServer\Version;
 
@@ -21,7 +22,7 @@ final class McpServerTest extends TestCase
 {
     private function server(?ArrayLogger $logger = null): McpServer
     {
-        return new McpServer([new EchoTool(), new ThrowingTool(), new RawArrayTool()], $logger);
+        return new McpServer([new EchoTool(), new ThrowingTool(), new RawArrayTool(), new StructuredTool()], $logger);
     }
 
     /**
@@ -92,12 +93,15 @@ final class McpServerTest extends TestCase
             $tools[$tool['name']] = $tool;
         }
 
-        self::assertSame(['echo', 'boom', 'raw'], array_keys($tools));
+        self::assertSame(['echo', 'boom', 'raw', 'structured'], array_keys($tools));
         self::assertSame('Echo', $tools['echo']['title']);
         self::assertSame(['title' => 'Echo', 'readOnlyHint' => true, 'idempotentHint' => true], $tools['echo']['annotations']);
         self::assertSame(['message'], $tools['echo']['inputSchema']['required']);
         self::assertArrayNotHasKey('annotations', $tools['boom']);
         self::assertArrayNotHasKey('title', $tools['boom']);
+        self::assertArrayNotHasKey('outputSchema', $tools['echo']);
+        self::assertSame('object', $tools['structured']['outputSchema']['type']);
+        self::assertSame(['doubled'], $tools['structured']['outputSchema']['required']);
     }
 
     public function testToolsListEncodesEmptyPropertiesAsObjectAndDefaultsType(): void
@@ -115,7 +119,7 @@ final class McpServerTest extends TestCase
     {
         $response = $this->request($this->server(), 'tools/list', ['cursor' => 'abc']);
 
-        self::assertCount(3, $response['result']['tools']);
+        self::assertCount(4, $response['result']['tools']);
         self::assertArrayNotHasKey('nextCursor', $response['result']);
     }
 
@@ -145,6 +149,57 @@ final class McpServerTest extends TestCase
 
         $badArguments = $this->request($server, 'tools/call', ['name' => 'echo', 'arguments' => 'oops']);
         self::assertSame(JsonRpc::INVALID_PARAMS, $badArguments['error']['code']);
+    }
+
+    public function testToolsCallRejectsArgumentsThatViolateTheSchema(): void
+    {
+        $logger = new ArrayLogger();
+        $server = $this->server($logger);
+
+        $missing = $this->request($server, 'tools/call', ['name' => 'echo', 'arguments' => []]);
+        self::assertSame(JsonRpc::INVALID_PARAMS, $missing['error']['code']);
+        self::assertStringContainsString('"message" is required.', $missing['error']['message']);
+        self::assertSame(['tool' => 'echo', 'violations' => ['"message" is required.']], $missing['error']['data']);
+
+        $unknown = $this->request($server, 'tools/call', ['name' => 'structured', 'arguments' => ['n' => 2, 'x' => 1]]);
+        self::assertSame(JsonRpc::INVALID_PARAMS, $unknown['error']['code']);
+        self::assertSame(['"x" is not an accepted argument.'], $unknown['error']['data']['violations']);
+
+        self::assertNotContains('info', $logger->levels(), 'the tool never ran');
+        self::assertContains('warning', $logger->levels());
+    }
+
+    public function testToolsCallLenientlyAcceptsNumericStringsAndCanSkipValidation(): void
+    {
+        $server = $this->server();
+
+        $lenient = $this->request($server, 'tools/call', ['name' => 'structured', 'arguments' => ['n' => '21']]);
+        self::assertSame(['doubled' => 42], $lenient['result']['structuredContent']);
+        self::assertSame('{"doubled":42}', $lenient['result']['content'][0]['text']);
+
+        self::assertTrue($server->isValidatingArguments());
+        $server->setValidateArguments(false);
+        $off = $this->request($server, 'tools/call', ['name' => 'structured', 'arguments' => ['n' => 1, 'x' => 1]]);
+        self::assertArrayNotHasKey('error', $off);
+        self::assertSame(['doubled' => 2], $off['result']['structuredContent']);
+
+        $disabledAtConstruction = new McpServer([new EchoTool()], null, null, null, false);
+        self::assertFalse($disabledAtConstruction->isValidatingArguments());
+        self::assertArrayNotHasKey('error', $this->request($disabledAtConstruction, 'tools/call', ['name' => 'echo']));
+    }
+
+    public function testToolCallsAreLoggedWithDurationAndSize(): void
+    {
+        $logger = new ArrayLogger();
+        $this->request($this->server($logger), 'tools/call', ['name' => 'echo', 'arguments' => ['message' => 'hi']]);
+
+        $info = array_values(array_filter($logger->records, static fn (array $r): bool => $r['level'] === 'info'));
+        self::assertCount(1, $info);
+        self::assertStringContainsString('{tool} {outcome} in {ms} ms, {bytes} bytes', $info[0]['message']);
+        self::assertSame('echo', $info[0]['context']['tool']);
+        self::assertSame('completed', $info[0]['context']['outcome']);
+        self::assertIsFloat($info[0]['context']['ms']);
+        self::assertSame(strlen('{"message":"hi"}'), $info[0]['context']['bytes']);
     }
 
     public function testToolExceptionBecomesAnIsErrorResultAndIsLogged(): void
