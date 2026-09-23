@@ -16,7 +16,6 @@ use function max;
 use function min;
 use function preg_match;
 use function sprintf;
-use function stripos;
 use function trim;
 
 /**
@@ -37,7 +36,7 @@ use function trim;
  * @package YiiMcp\McpServer\Example
  *
  * SECURITY CONSIDERATIONS:
- * - This tool enforces read-only operations (SELECT, SHOW, DESCRIBE, EXPLAIN)
+ * - This tool enforces read-only statements (SELECT, SHOW, DESCRIBE, EXPLAIN, CHECKSUM TABLE)
  * - Always use database users with minimal permissions: the keyword whitelist is a guard rail,
  *   the database grants are the security boundary
  * - Consider IP restrictions and connection limits
@@ -61,6 +60,13 @@ class MysqlQueryTool implements McpToolInterface, McpToolAnnotationsInterface
 
     /** Upper bound for the `limit` argument, so one call can never dump a whole table. */
     public const MAX_LIMIT = 1000;
+
+    /**
+     * The statements the tool runs, matched as whole keywords at the start of the query; all are read-only.
+     * CHECKSUM TABLE compares a table's contents across servers: it needs only the SELECT privilege and blocks
+     * no reads or writes, but EXTENDED reads every row.
+     */
+    public const READ_ONLY_STATEMENT = '/^(?:SELECT|SHOW|DESCRIBE|EXPLAIN|CHECKSUM\s+TABLE)\b/i';
 
     /**
      * Database connection instance
@@ -91,8 +97,9 @@ class MysqlQueryTool implements McpToolInterface, McpToolAnnotationsInterface
     public function getDescription(): string
     {
         return sprintf(
-            'Execute a read-only SQL query (SELECT, SHOW, DESCRIBE, EXPLAIN) against the MySQL database. '
-            . 'Use this to inspect schema or retrieve data. At most %d rows are returned per call (default %d).',
+            'Execute a read-only SQL query (SELECT, SHOW, DESCRIBE, EXPLAIN, CHECKSUM TABLE) against the MySQL database. '
+            . 'Use this to inspect schema or retrieve data; CHECKSUM TABLE compares whole tables across servers and '
+            . 'reads every row, so name only the tables you need. At most %d rows are returned per call (default %d).',
             self::MAX_LIMIT,
             self::DEFAULT_LIMIT
         );
@@ -113,7 +120,7 @@ class MysqlQueryTool implements McpToolInterface, McpToolAnnotationsInterface
             'properties' => [
                 'sql' => [
                     'type' => 'string',
-                    'description' => 'The SQL SELECT statement to execute',
+                    'description' => 'The read-only SQL statement to execute (SELECT, SHOW, DESCRIBE, EXPLAIN or CHECKSUM TABLE)',
                 ],
                 'database' => [
                     'type' => 'string',
@@ -180,21 +187,9 @@ class MysqlQueryTool implements McpToolInterface, McpToolAnnotationsInterface
 
         // SECURITY: Whitelist allowed SQL commands (read-only operations only)
         // This prevents data modification, deletion, or schema changes
-        $allowedStartKeywords = ['SELECT', 'SHOW', 'DESCRIBE', 'EXPLAIN'];
-        $isAllowed = false;
-
-        // Check if query starts with an allowed command (case-insensitive)
-        foreach ($allowedStartKeywords as $keyword) {
-            if (stripos($sql, $keyword) === 0) {
-                $isAllowed = true;
-                break;
-            }
-        }
-
-        // Reject queries that don't start with allowed commands
-        if (!$isAllowed) {
+        if (!self::isReadOnlyStatement($sql)) {
             return $this->error(
-                'Only read-only queries (SELECT, SHOW, DESCRIBE, EXPLAIN) are allowed. Your query: ' . $sql
+                'Only read-only statements (SELECT, SHOW, DESCRIBE, EXPLAIN, CHECKSUM TABLE) are allowed. Your query: ' . $sql
             );
         }
 
@@ -234,6 +229,19 @@ class MysqlQueryTool implements McpToolInterface, McpToolAnnotationsInterface
         } catch (Throwable $e) {
             return $this->error('SQL Error: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * Whether $sql starts with one of the read-only statements this tool runs ({@see READ_ONLY_STATEMENT}).
+     *
+     * A guard rail only: the database grants are the security boundary.
+     *
+     * @param string $sql the trimmed query
+     * @return bool
+     */
+    public static function isReadOnlyStatement(string $sql): bool
+    {
+        return preg_match(self::READ_ONLY_STATEMENT, $sql) === 1;
     }
 
     /**

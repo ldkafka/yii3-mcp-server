@@ -428,8 +428,8 @@ See [EDITOR_INTEGRATION.md](docs/EDITOR_INTEGRATION.md) for more scenarios and [
 **Read-Only by Default**: The example `MysqlQueryTool` enforces read-only operations:
 
 ```php
-// Only allows: SELECT, SHOW, DESCRIBE, EXPLAIN
-$allowedKeywords = ['SELECT', 'SHOW', 'DESCRIBE', 'EXPLAIN'];
+// Only allows: SELECT, SHOW, DESCRIBE, EXPLAIN, CHECKSUM TABLE
+MysqlQueryTool::isReadOnlyStatement($sql); // matches MysqlQueryTool::READ_ONLY_STATEMENT
 ```
 
 **Recommendations:**

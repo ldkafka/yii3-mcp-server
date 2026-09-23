@@ -4,6 +4,16 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-09-23
+
+### Added
+
+- **`CHECKSUM TABLE` in the example `MysqlQueryTool`.** It is read-only: it needs only the `SELECT`
+  privilege and blocks no reads or writes, and it compares a table's contents on two servers.
+  `EXTENDED` reads every row. The statement check is now `MysqlQueryTool::isReadOnlyStatement()`
+  (pattern `READ_ONLY_STATEMENT`), which matches whole keywords at the start of the query and allows
+  any whitespace between `CHECKSUM` and `TABLE`.
+
 ## [1.2.0] - 2026-09-16
 
 ### Added
