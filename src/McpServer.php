@@ -9,6 +9,7 @@ use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use stdClass;
 use Throwable;
+use YiiMcp\McpServer\Contract\McpCallerAwareInterface;
 use YiiMcp\McpServer\Contract\McpToolAnnotationsInterface;
 use YiiMcp\McpServer\Contract\McpToolInterface;
 use YiiMcp\McpServer\Contract\McpToolOutputSchemaInterface;
@@ -18,6 +19,8 @@ use YiiMcp\McpServer\Protocol\JsonRpcException;
 use YiiMcp\McpServer\Protocol\ProtocolVersion;
 use YiiMcp\McpServer\Transport\StdioTransport;
 
+use function array_flip;
+use function array_intersect_key;
 use function array_is_list;
 use function array_key_exists;
 use function hrtime;
@@ -47,6 +50,10 @@ use function trim;
  * checked against the tool's input schema first ({@see ArgumentValidator}); clear mismatches are
  * answered with `-32602 Invalid params` listing the violations, as the specification prescribes.
  *
+ * A transport may name the caller of a request (the HTTP transport takes it from a named bearer
+ * token). A caller with a scope sees and calls only the tools in it; any other tool is answered
+ * exactly like a missing one. Without a caller or a scope, every tool is available.
+ *
  * @see https://modelcontextprotocol.io/ MCP Protocol Specification
  *
  * @example Serve over stdio from a console command:
@@ -75,6 +82,9 @@ class McpServer
 
     private bool $validateArguments;
 
+    /** @var array<string, list<string>> */
+    private array $scopes;
+
     /**
      * @param McpToolInterface[] $tools Tools to register.
      * @param LoggerInterface|null $logger Diagnostics sink; defaults to a null logger (the stdio
@@ -84,6 +94,8 @@ class McpServer
      *        on initialize; defaults to this package's name and version.
      * @param bool $validateArguments Check `tools/call` arguments against the tool's input schema
      *        and reject clear mismatches with `-32602` before the tool runs (see {@see ArgumentValidator}).
+     * @param array<string, list<string>> $scopes Tool names each caller may see and call, by caller
+     *        name. Callers not listed here, and requests without a caller, get every tool.
      */
     public function __construct(
         array $tools = [],
@@ -91,6 +103,7 @@ class McpServer
         ?string $instructions = null,
         ?array $serverInfo = null,
         bool $validateArguments = true,
+        array $scopes = [],
     ) {
         foreach ($tools as $tool) {
             $this->registerTool($tool);
@@ -99,6 +112,7 @@ class McpServer
         $this->instructions = $instructions;
         $this->serverInfo = $serverInfo ?? Version::getServerInfo();
         $this->validateArguments = $validateArguments;
+        $this->scopes = $scopes;
     }
 
     /**
@@ -222,18 +236,19 @@ class McpServer
     /**
      * Dispatch a decoded payload that may be a single message or a JSON-RPC batch.
      *
+     * @param string|null $caller Who sent the payload, as the transport authenticated it; null when unknown.
      * @return array<mixed>|null One response, a list of responses for a batch, or null when there is
      *         nothing to send back.
      */
-    public function dispatchPayload(mixed $payload): ?array
+    public function dispatchPayload(mixed $payload, ?string $caller = null): ?array
     {
         if (!JsonRpc::isBatch($payload)) {
-            return $this->dispatch($payload);
+            return $this->dispatch($payload, $caller);
         }
 
         $responses = [];
         foreach ($payload as $message) {
-            $response = $this->dispatch($message);
+            $response = $this->dispatch($message, $caller);
             if ($response !== null) {
                 $responses[] = $response;
             }
@@ -249,9 +264,10 @@ class McpServer
      * even when they fail, exactly as JSON-RPC 2.0 prescribes. Structurally invalid messages get an
      * "Invalid Request" error whose id is null when no usable id was present.
      *
+     * @param string|null $caller Who sent the message, as the transport authenticated it; null when unknown.
      * @return array<mixed>|null Response envelope, or null for notifications.
      */
-    public function dispatch(mixed $message): ?array
+    public function dispatch(mixed $message, ?string $caller = null): ?array
     {
         if (!is_array($message) || $message === [] || array_is_list($message)) {
             return JsonRpc::error(null, JsonRpc::INVALID_REQUEST, 'Invalid Request: expected a JSON-RPC request object.');
@@ -286,8 +302,8 @@ class McpServer
             $result = match ($method) {
                 'initialize' => $this->handleInitialize($params),
                 'ping' => new stdClass(),
-                'tools/list' => $this->handleListTools($params),
-                'tools/call' => $this->handleCallTool($params),
+                'tools/list' => $this->handleListTools($params, $caller),
+                'tools/call' => $this->handleCallTool($params, $caller),
                 default => throw JsonRpcException::methodNotFound($method),
             };
         } catch (JsonRpcException $e) {
@@ -357,7 +373,21 @@ class McpServer
     }
 
     /**
-     * `tools/list`: describe every registered tool.
+     * The tools a caller may see and call: those in its scope, or every tool when it has none.
+     *
+     * @return array<string, McpToolInterface>
+     */
+    private function toolsFor(?string $caller): array
+    {
+        if ($caller === null || !isset($this->scopes[$caller])) {
+            return $this->tools;
+        }
+
+        return array_intersect_key($this->tools, array_flip($this->scopes[$caller]));
+    }
+
+    /**
+     * `tools/list`: describe every tool the caller may use.
      *
      * A `cursor` parameter is accepted for forward compatibility, but all tools always fit in one
      * page, so no `nextCursor` is returned.
@@ -365,10 +395,10 @@ class McpServer
      * @param array<string, mixed> $params
      * @return array{tools: list<array<string, mixed>>}
      */
-    private function handleListTools(array $params): array
+    private function handleListTools(array $params, ?string $caller): array
     {
         $definitions = [];
-        foreach ($this->tools as $tool) {
+        foreach ($this->toolsFor($caller) as $tool) {
             $definition = [
                 'name' => $tool->getName(),
                 'description' => $tool->getDescription(),
@@ -399,15 +429,16 @@ class McpServer
     /**
      * `tools/call`: run one tool.
      *
-     * Bad parameters, unknown tool names and (when enabled) arguments that violate the tool's input
-     * schema are protocol errors. Anything thrown by the tool itself becomes an `isError` result
-     * carrying the exception message. Every call is logged at info level with its duration and
-     * result size, so an operator can see what assistants are doing.
+     * Bad parameters, unknown tool names (a tool outside the caller's scope counts as unknown) and
+     * (when enabled) arguments that violate the tool's input schema are protocol errors. Anything
+     * thrown by the tool itself becomes an `isError` result carrying the exception message. Every
+     * call is logged at info level with its caller, duration and result size, never its arguments,
+     * so an operator can see what assistants are doing.
      *
      * @param array<string, mixed> $params
      * @return array<string, mixed> MCP tool result.
      */
-    private function handleCallTool(array $params): array
+    private function handleCallTool(array $params, ?string $caller): array
     {
         $name = $params['name'] ?? null;
         if (!is_string($name) || $name === '') {
@@ -419,7 +450,7 @@ class McpServer
             throw JsonRpcException::invalidParams('"arguments" must be an object.');
         }
 
-        $tool = $this->tools[$name] ?? null;
+        $tool = $this->toolsFor($caller)[$name] ?? null;
         if ($tool === null) {
             throw JsonRpcException::invalidParams('Unknown tool: ' . $name);
         }
@@ -434,12 +465,16 @@ class McpServer
             }
         }
 
+        if ($tool instanceof McpCallerAwareInterface) {
+            $tool = $tool->withCaller($caller);
+        }
+
+        $logContext = ['tool' => $name] + ($caller === null ? [] : ['caller' => $caller]);
         $started = hrtime(true);
         try {
             $result = self::normalizeToolResult($tool->execute($arguments));
         } catch (Throwable $e) {
-            $this->logger->error('Tool {tool} failed after {ms} ms: {error}', [
-                'tool' => $name,
+            $this->logger->error('Tool {tool} failed after {ms} ms: {error}', $logContext + [
                 'ms' => self::elapsedMs($started),
                 'error' => $e->getMessage(),
                 'exception' => $e,
@@ -448,8 +483,7 @@ class McpServer
             return ['isError' => true, 'content' => [['type' => 'text', 'text' => $e->getMessage()]]];
         }
 
-        $this->logger->info('Tool {tool} {outcome} in {ms} ms, {bytes} bytes of content.', [
-            'tool' => $name,
+        $this->logger->info('Tool {tool} {outcome} in {ms} ms, {bytes} bytes of content.', $logContext + [
             'outcome' => !empty($result['isError']) ? 'returned an error' : 'completed',
             'ms' => self::elapsedMs($started),
             'bytes' => self::contentSize($result),

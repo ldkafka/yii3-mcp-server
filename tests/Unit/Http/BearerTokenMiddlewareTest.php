@@ -42,7 +42,7 @@ final class BearerTokenMiddlewareTest extends TestCase
     }
 
     /**
-     * @param string|list<string> $tokens
+     * @param string|array<array-key, mixed> $tokens
      */
     private function middleware(string|array $tokens = 'secret'): BearerTokenMiddleware
     {
@@ -81,6 +81,47 @@ final class BearerTokenMiddlewareTest extends TestCase
         self::assertSame(200, $response->getStatusCode());
         self::assertNotNull($this->seen);
         self::assertTrue($this->seen->getAttribute(BearerTokenMiddleware::ATTRIBUTE_AUTHENTICATED));
+        self::assertNull($this->seen->getAttribute(BearerTokenMiddleware::ATTRIBUTE_CALLER, 'unset'), 'a plain token has no caller');
+    }
+
+    public function testNamedTokenSetsTheCallerAndMixesWithPlainTokens(): void
+    {
+        $middleware = $this->middleware(['reader' => 'tok-reader', 'plain']);
+
+        self::assertSame(200, $middleware->process($this->request('Bearer tok-reader'), $this->next())->getStatusCode());
+        self::assertTrue($this->seen->getAttribute(BearerTokenMiddleware::ATTRIBUTE_AUTHENTICATED));
+        self::assertSame('reader', $this->seen->getAttribute(BearerTokenMiddleware::ATTRIBUTE_CALLER));
+
+        self::assertSame(200, $middleware->process($this->request('Bearer plain'), $this->next())->getStatusCode());
+        self::assertNull($this->seen->getAttribute(BearerTokenMiddleware::ATTRIBUTE_CALLER, 'unset'));
+
+        self::assertSame(401, $middleware->process($this->request('Bearer reader'), $this->next())->getStatusCode(), 'the name is not a token');
+    }
+
+    public function testCallerMayHoldSeveralTokensForRotation(): void
+    {
+        $middleware = $this->middleware(['reader' => ['tok-new', 'tok-old']]);
+
+        foreach (['tok-new', 'tok-old'] as $token) {
+            self::assertSame(200, $middleware->process($this->request('Bearer ' . $token), $this->next())->getStatusCode());
+            self::assertSame('reader', $this->seen->getAttribute(BearerTokenMiddleware::ATTRIBUTE_CALLER));
+        }
+        self::assertSame(401, $middleware->process($this->request('Bearer reader'), $this->next())->getStatusCode());
+    }
+
+    public function testUnsetOrEmptyTokensAddNoToken(): void
+    {
+        $unset = getenv('YII3_MCP_SERVER_TEST_UNSET_TOKEN');
+        self::assertFalse($unset);
+        $middleware = $this->middleware(['reader' => $unset, 'writer' => ['', null], 'other' => 'tok-other', 0 => '']);
+
+        foreach (['', 'reader', 'writer', '0', '1'] as $presented) {
+            self::assertSame(401, $middleware->process($this->request('Bearer ' . $presented), $this->next())->getStatusCode(), $presented);
+        }
+        self::assertSame(200, $middleware->process($this->request('Bearer tok-other'), $this->next())->getStatusCode());
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->middleware(['reader' => $unset, 'writer' => ['']]);
     }
 
     public function testSchemeIsCaseInsensitiveAndWhitespaceTolerant(): void

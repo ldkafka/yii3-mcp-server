@@ -14,10 +14,8 @@ use Psr\Http\Server\RequestHandlerInterface;
 use YiiMcp\McpServer\Protocol\JsonRpc;
 
 use function addcslashes;
-use function array_filter;
-use function array_map;
-use function array_values;
 use function hash_equals;
+use function is_int;
 use function preg_match;
 use function sprintf;
 use function strtoupper;
@@ -30,6 +28,10 @@ use function strtoupper;
  * tokens at once lets you rotate a token without downtime. Keep tokens out of version control
  * (environment variables, Docker secrets, a local params file) and always serve over TLS.
  *
+ * Tokens may be grouped under a caller name (`name => token` or `name => list of tokens`; integer
+ * keys are plain tokens). The matched name is set as the `mcp.caller` request attribute; {@see McpHttpHandler} passes it to the server, which can
+ * limit each caller to a list of tools (see the `scopes` argument of {@see \YiiMcp\McpServer\McpServer}).
+ *
  * `OPTIONS` requests pass through unauthenticated: browsers never attach `Authorization` to a CORS
  * preflight, and the endpoint answers a preflight with an empty `204` that reveals nothing.
  */
@@ -38,11 +40,16 @@ final class BearerTokenMiddleware implements MiddlewareInterface
     /** Request attribute set to `true` once a token has been verified. */
     public const ATTRIBUTE_AUTHENTICATED = 'mcp.authenticated';
 
-    /** @var list<string> */
-    private array $tokens;
+    /** Request attribute set to the matched token's caller name (null for a token without one). */
+    public const ATTRIBUTE_CALLER = 'mcp.caller';
+
+    /** @var list<array{0: string, 1: string|null}> Pairs of accepted token and caller name. */
+    private array $tokens = [];
 
     /**
-     * @param string|list<string> $tokens One or more accepted tokens.
+     * @param string|array<array-key, string|list<string>> $tokens One or more accepted tokens: a
+     *        list of plain tokens, `caller name => token`, `caller name => list of tokens` (rotation
+     *        without downtime), or a mix (integer keys are plain tokens). Empty tokens are skipped.
      * @param ResponseFactoryInterface $responseFactory PSR-17 factory used to build the 401 response.
      * @param StreamFactoryInterface $streamFactory PSR-17 factory used to build the 401 body.
      * @param string $realm Realm reported in the `WWW-Authenticate` challenge.
@@ -55,14 +62,17 @@ final class BearerTokenMiddleware implements MiddlewareInterface
         private StreamFactoryInterface $streamFactory,
         private string $realm = 'MCP',
     ) {
-        $tokens = array_values(array_filter(
-            array_map(static fn (mixed $token): string => (string) $token, (array) $tokens),
-            static fn (string $token): bool => $token !== ''
-        ));
-        if ($tokens === []) {
+        foreach ((array) $tokens as $key => $value) {
+            foreach ((array) $value as $token) {
+                $token = (string) $token;
+                if ($token !== '') {
+                    $this->tokens[] = [$token, is_int($key) ? null : $key];
+                }
+            }
+        }
+        if ($this->tokens === []) {
             throw new InvalidArgumentException('BearerTokenMiddleware requires at least one non-empty token.');
         }
-        $this->tokens = $tokens;
     }
 
     /**
@@ -76,9 +86,11 @@ final class BearerTokenMiddleware implements MiddlewareInterface
 
         $presented = self::extractToken($request->getHeaderLine('Authorization'));
         if ($presented !== null) {
-            foreach ($this->tokens as $token) {
+            foreach ($this->tokens as [$token, $caller]) {
                 if (hash_equals($token, $presented)) {
-                    return $handler->handle($request->withAttribute(self::ATTRIBUTE_AUTHENTICATED, true));
+                    return $handler->handle($request
+                        ->withAttribute(self::ATTRIBUTE_AUTHENTICATED, true)
+                        ->withAttribute(self::ATTRIBUTE_CALLER, $caller));
                 }
             }
         }

@@ -4,6 +4,26 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-10-15
+
+### Added
+
+- **Named bearer tokens.** `BearerTokenMiddleware` also accepts tokens keyed by caller name:
+  `name => token` or `name => list of tokens` (rotation without downtime). Integer keys are plain
+  tokens, as before, and can be mixed in; empty tokens are skipped. On a match it sets the request
+  attribute `mcp.caller` (`BearerTokenMiddleware::ATTRIBUTE_CALLER`), null for a plain token;
+  comparisons stay constant-time. `McpHttpHandler` passes it on: `McpServer::dispatchPayload()` and `dispatch()` take
+  an optional `?string $caller`.
+- **Per-caller tool scopes.** New `McpServer` constructor parameter `scopes`
+  (`caller => list of tool names`). A scoped caller sees only those tools in `tools/list`; a call to
+  any other tool gets the same `-32602 Unknown tool` error as a missing one. Callers without a scope,
+  plain tokens and stdio see every tool, as before.
+- **`McpCallerAwareInterface`** (`withCaller(?string $caller): static`): the server hands the caller
+  to such a tool before `execute()` and runs the copy it returns.
+- The tool-call log line carries `caller` when there is one. Argument values are never logged.
+
+Backward compatible: a plain token list and no scopes behave exactly as 1.3.0.
+
 ## [1.3.0] - 2026-09-23
 
 ### Added

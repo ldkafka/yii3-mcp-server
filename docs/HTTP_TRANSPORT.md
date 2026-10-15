@@ -14,11 +14,12 @@ Docker or a PHP installation on the client side.
 1. [How it works](#how-it-works)
 2. [Wiring in a Yii3 application](#wiring-in-a-yii3-application)
 3. [Other PSR-15 stacks](#other-psr-15-stacks)
-4. [Reverse proxy](#reverse-proxy)
-5. [Testing the endpoint](#testing-the-endpoint)
-6. [Client configuration](#client-configuration)
-7. [Security checklist](#security-checklist)
-8. [Protocol notes](#protocol-notes)
+4. [Named tokens and per-caller scopes](#named-tokens-and-per-caller-scopes)
+5. [Reverse proxy](#reverse-proxy)
+6. [Testing the endpoint](#testing-the-endpoint)
+7. [Client configuration](#client-configuration)
+8. [Security checklist](#security-checklist)
+9. [Protocol notes](#protocol-notes)
 
 ---
 
@@ -183,6 +184,43 @@ Slim, Mezzano, Laminas, Spiral and RoadRunner all accept `McpHttpHandler` as a r
 
 ---
 
+## Named tokens and per-caller scopes
+
+Since 1.4.0 a token can carry a caller name, and the server can limit a caller to some tools.
+Key the tokens by caller name: `name => token`, or `name => list of tokens` to rotate a caller's
+token without downtime. Integer keys are plain tokens, as before, and can be mixed in. Empty
+tokens are skipped, so an unset variable adds no token:
+
+```php
+'tokens' => [
+    'reporting' => getenv('MCP_TOKEN_REPORTING'),
+    'admin' => [getenv('MCP_TOKEN_ADMIN'), getenv('MCP_TOKEN_ADMIN_PREVIOUS')],
+    getenv('MCP_TOKEN'), // a plain token: no caller name
+],
+```
+
+On a match `BearerTokenMiddleware` sets the request attribute `mcp.caller` (`BearerTokenMiddleware::ATTRIBUTE_CALLER`)
+to the name, or to null for a plain token. `McpHttpHandler` passes it to `McpServer::dispatchPayload()`.
+Your own authentication middleware can set the same attribute.
+
+Give `McpServer` the scopes, `caller => list of tool names`:
+
+```php
+new McpServer($tools, $logger, scopes: ['reporting' => ['query_database']]);
+```
+
+- A caller with a scope sees only those tools in `tools/list`. A call to any other tool gets the same
+  `-32602 Unknown tool` error as a tool that does not exist, so nothing is revealed.
+- A caller without a scope, a plain token and stdio see every tool, exactly as before.
+- The per-call log line carries `caller` next to `tool`, `ms`, `bytes` and `outcome`. Argument values
+  and tokens are never logged.
+
+A tool that needs to know who calls it implements `McpCallerAwareInterface`. Before `execute()` the
+server calls `withCaller(?string $caller): static` and runs the instance it returns. Return a copy
+(`clone`): the registered tool is shared by every request.
+
+---
+
 ## Reverse proxy
 
 Terminate TLS in front of PHP and forward only the MCP path. nginx example for a PHP-FPM upstream:
@@ -287,14 +325,15 @@ does not care how the request was authenticated.
 - **Long random tokens**, injected through the environment or secrets, rotated with the two-token
   overlap shown above.
 - **Least-privilege tools.** The endpoint exposes whatever the tools can reach. Use read-only
-  database users, allow-listed file roots, bounded result sizes.
+  database users, allow-listed file roots, bounded result sizes. Give each client its own named
+  token and scope it to the tools it needs.
 - **Origin allow-list.** Leave it empty unless a browser-based client needs access; requests
   without an `Origin` header (CLI and desktop clients) always pass.
 - **Rate limit and, where possible, IP-restrict** the location in the reverse proxy.
 - **Body size limit** (`client_max_body_size`, `post_max_size`) to a few megabytes.
-- **Audit log.** Pass a PSR-3 logger to `McpServer`; every rejected request, unknown method and
-  failing tool is logged with its method and tool name. Add your own logging tool wrapper if you
-  need every call recorded.
+- **Audit log.** Pass a PSR-3 logger to `McpServer`; every tool call is logged with its tool name,
+  caller (named tokens), duration and result size, and every rejected request, unknown method and
+  failing tool with its method and tool name.
 - **No sessions, no cookies.** Keep session and CSRF middleware off the route; there is nothing for
   them to protect and they would only reject legitimate requests.
 

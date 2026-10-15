@@ -11,10 +11,13 @@ use PHPUnit\Framework\TestCase;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\RequestHandlerInterface;
+use YiiMcp\McpServer\Http\BearerTokenMiddleware;
 use YiiMcp\McpServer\Http\McpHttpHandler;
 use YiiMcp\McpServer\McpServer;
 use YiiMcp\McpServer\Protocol\JsonRpc;
 use YiiMcp\McpServer\Protocol\ProtocolVersion;
+use YiiMcp\McpServer\Tests\Support\ArrayLogger;
+use YiiMcp\McpServer\Tests\Support\CallerTool;
 use YiiMcp\McpServer\Tests\Support\EchoTool;
 
 use function json_decode;
@@ -202,6 +205,25 @@ final class McpHttpHandlerTest extends TestCase
 
         $call = $handler->handle($this->request('POST', '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"message":"hi"}}}', [McpHttpHandler::HEADER_PROTOCOL_VERSION => '2025-06-18']));
         self::assertSame('{"message":"hi"}', $this->json($call)['result']['content'][0]['text']);
+    }
+
+    public function testNamedTokenReachesTheServerAsTheCaller(): void
+    {
+        $logger = new ArrayLogger();
+        $server = new McpServer([new EchoTool(), new CallerTool()], $logger, null, null, true, ['reader' => ['whoami']]);
+        $handler = new McpHttpHandler($server, new ResponseFactory(), new StreamFactory(), [], $logger);
+        $auth = new BearerTokenMiddleware(['reader' => 'tok-planted-123', 'plain-token'], new ResponseFactory(), new StreamFactory());
+        $post = fn (string $token, string $body): array => $this->json(
+            $auth->process($this->request('POST', $body, ['Authorization' => 'Bearer ' . $token]), $handler)
+        );
+        $list = '{"jsonrpc":"2.0","id":1,"method":"tools/list"}';
+        $whoami = '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"whoami"}}';
+
+        self::assertSame(['whoami'], array_column($post('tok-planted-123', $list)['result']['tools'], 'name'));
+        self::assertSame('reader', $post('tok-planted-123', $whoami)['result']['content'][0]['text']);
+        self::assertSame(['echo', 'whoami'], array_column($post('plain-token', $list)['result']['tools'], 'name'), 'plain tokens see every tool');
+        self::assertSame('none', $post('plain-token', $whoami)['result']['content'][0]['text']);
+        self::assertStringNotContainsString('tok-planted-123', (string) json_encode($logger->records));
     }
 
     public function testMiddlewareAndInvokableEntryPointsDelegateToHandle(): void

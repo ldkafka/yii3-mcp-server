@@ -21,6 +21,7 @@ use function array_map;
 use function array_values;
 use function implode;
 use function in_array;
+use function is_string;
 use function rtrim;
 use function sprintf;
 use function str_starts_with;
@@ -39,7 +40,8 @@ use function trim;
  *
  * The handler validates the `Origin` header against an allow-list (DNS rebinding protection),
  * checks the `MCP-Protocol-Version` header and requires a JSON content type. Authentication is
- * deliberately separate: put {@see BearerTokenMiddleware} (or your own) in front of it.
+ * deliberately separate: put {@see BearerTokenMiddleware} (or your own) in front of it. A string
+ * `mcp.caller` request attribute set there is passed to the server as the caller name.
  *
  * @see https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#streamable-http
  */
@@ -143,7 +145,8 @@ final class McpHttpHandler implements RequestHandlerInterface, MiddlewareInterfa
             return $this->withCors($response, $origin);
         }
 
-        $result = $this->server->dispatchPayload($payload);
+        $caller = $request->getAttribute(BearerTokenMiddleware::ATTRIBUTE_CALLER);
+        $result = $this->server->dispatchPayload($payload, is_string($caller) ? $caller : null);
         if ($result === null) {
             // Notifications only: acknowledged, nothing to return.
             return $this->withCors($this->responseFactory->createResponse(202), $origin);

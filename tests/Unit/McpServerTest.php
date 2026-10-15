@@ -10,6 +10,7 @@ use YiiMcp\McpServer\Protocol\JsonRpc;
 use YiiMcp\McpServer\Protocol\ProtocolVersion;
 use YiiMcp\McpServer\Tests\Support\ArrayLogger;
 use YiiMcp\McpServer\Tests\Support\BrokenSchemaTool;
+use YiiMcp\McpServer\Tests\Support\CallerTool;
 use YiiMcp\McpServer\Tests\Support\EchoTool;
 use YiiMcp\McpServer\Tests\Support\RawArrayTool;
 use YiiMcp\McpServer\Tests\Support\StructuredTool;
@@ -200,6 +201,70 @@ final class McpServerTest extends TestCase
         self::assertSame('completed', $info[0]['context']['outcome']);
         self::assertIsFloat($info[0]['context']['ms']);
         self::assertSame(strlen('{"message":"hi"}'), $info[0]['context']['bytes']);
+    }
+
+    public function testScopedCallerListsOnlyItsTools(): void
+    {
+        $server = new McpServer([new EchoTool(), new ThrowingTool(), new RawArrayTool()], null, null, null, true, ['reader' => ['raw', 'echo']]);
+        $names = fn (?string $caller): array => array_column(
+            $server->dispatch(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/list'], $caller)['result']['tools'],
+            'name'
+        );
+
+        self::assertSame(['echo', 'raw'], $names('reader'));
+        self::assertSame(['echo', 'boom', 'raw'], $names('other'), 'a caller without a scope sees every tool');
+        self::assertSame(['echo', 'boom', 'raw'], $names(null), 'no caller (stdio) sees every tool');
+    }
+
+    public function testCallOutsideTheScopeIsRefusedLikeAnUnknownTool(): void
+    {
+        $logger = new ArrayLogger();
+        $server = new McpServer([new EchoTool(), new ThrowingTool()], $logger, null, null, true, ['reader' => ['echo']]);
+        $call = static fn (string $name, ?string $caller): ?array => $server->dispatch(
+            ['jsonrpc' => '2.0', 'id' => 7, 'method' => 'tools/call', 'params' => ['name' => $name]],
+            $caller
+        );
+
+        $outside = $call('boom', 'reader');
+        $missing = $call('nope', 'reader');
+
+        self::assertSame(JsonRpc::INVALID_PARAMS, $outside['error']['code']);
+        self::assertSame('Invalid params: Unknown tool: boom', $outside['error']['message']);
+        self::assertSame(['jsonrpc', 'id', 'error'], array_keys($outside));
+        self::assertSame(array_keys($missing['error']), array_keys($outside['error']), 'same shape as a missing tool');
+        self::assertNotContains('error', $logger->levels(), 'the tool never ran');
+        self::assertTrue($call('boom', null)['result']['isError'], 'unscoped, the tool runs');
+    }
+
+    public function testToolCallLogLineHasTheCallerButNoArgumentValues(): void
+    {
+        $logger = new ArrayLogger();
+        $server = new McpServer([new EchoTool()], $logger, null, null, true, ['reader' => ['echo']]);
+        $server->dispatch(
+            ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/call', 'params' => ['name' => 'echo', 'arguments' => ['message' => 'planted-value-42']]],
+            'reader'
+        );
+
+        $info = array_values(array_filter($logger->records, static fn (array $r): bool => $r['level'] === 'info'));
+        self::assertCount(1, $info);
+        self::assertSame(['tool', 'caller', 'outcome', 'ms', 'bytes'], array_keys($info[0]['context']));
+        self::assertSame('reader', $info[0]['context']['caller']);
+        self::assertSame('echo', $info[0]['context']['tool']);
+        self::assertStringNotContainsString('planted-value-42', (string) json_encode($logger->records));
+    }
+
+    public function testCallerAwareToolGetsTheCallerOnACopy(): void
+    {
+        $tool = new CallerTool();
+        $server = new McpServer([$tool]);
+        $call = static fn (?string $caller): string => $server->dispatch(
+            ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/call', 'params' => ['name' => 'whoami']],
+            $caller
+        )['result']['content'][0]['text'];
+
+        self::assertSame('alice', $call('alice'));
+        self::assertSame('none', $call(null), 'the caller does not stick to the registered tool');
+        self::assertSame('none', $tool->execute([])['content'][0]['text']);
     }
 
     public function testToolExceptionBecomesAnIsErrorResultAndIsLogged(): void
