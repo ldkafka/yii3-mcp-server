@@ -17,6 +17,10 @@ namespace YiiMcp\McpServer\Contract;
  * - `idempotentHint`: repeated calls with the same arguments have no additional effect
  * - `openWorldHint`: the tool interacts with external entities (the web, third-party APIs)
  *
+ * The four hints are sent as JSON booleans (`1` becomes `true`); a null hint is left out. Set every
+ * hint explicitly when a client needs all of them (OpenAI requires readOnlyHint, destructiveHint
+ * and openWorldHint).
+ *
  * @example
  * ```php
  * public function getAnnotations(): array

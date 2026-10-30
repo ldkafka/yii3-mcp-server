@@ -19,12 +19,14 @@ final class ProtocolVersion
     public const V2024_11_05 = '2024-11-05';
     public const V2025_03_26 = '2025-03-26';
     public const V2025_06_18 = '2025-06-18';
+    public const V2025_11_25 = '2025-11-25';
 
     /** Newest revision implemented by this package. */
-    public const LATEST = self::V2025_06_18;
+    public const LATEST = self::V2025_11_25;
 
     /** All revisions accepted during negotiation, newest first. */
     public const SUPPORTED = [
+        self::V2025_11_25,
         self::V2025_06_18,
         self::V2025_03_26,
         self::V2024_11_05,

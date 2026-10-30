@@ -12,6 +12,7 @@ use Throwable;
 use YiiMcp\McpServer\Contract\McpCallerAwareInterface;
 use YiiMcp\McpServer\Contract\McpToolAnnotationsInterface;
 use YiiMcp\McpServer\Contract\McpToolInterface;
+use YiiMcp\McpServer\Contract\McpToolMetaInterface;
 use YiiMcp\McpServer\Contract\McpToolOutputSchemaInterface;
 use YiiMcp\McpServer\Protocol\ArgumentValidator;
 use YiiMcp\McpServer\Protocol\JsonRpc;
@@ -64,6 +65,9 @@ use function trim;
  */
 class McpServer
 {
+    /** Tool annotation hints that `tools/list` sends as JSON booleans when set (OpenAI requires booleans). */
+    private const ANNOTATION_HINTS = ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint'];
+
     /**
      * Registry of available tools indexed by tool name.
      *
@@ -410,6 +414,13 @@ class McpServer
                 if (is_string($title) && $title !== '') {
                     $definition['title'] = $title;
                 }
+                foreach (self::ANNOTATION_HINTS as $hint) {
+                    if (isset($annotations[$hint])) {
+                        $annotations[$hint] = (bool) $annotations[$hint];
+                    } else {
+                        unset($annotations[$hint]);
+                    }
+                }
                 if ($annotations !== []) {
                     $definition['annotations'] = $annotations;
                 }
@@ -418,6 +429,12 @@ class McpServer
                 $outputSchema = $tool->getOutputSchema();
                 if ($outputSchema !== []) {
                     $definition['outputSchema'] = self::normalizeInputSchema($outputSchema);
+                }
+            }
+            if ($tool instanceof McpToolMetaInterface) {
+                $meta = $tool->getMeta();
+                if ($meta !== []) {
+                    $definition['_meta'] = $meta;
                 }
             }
             $definitions[] = $definition;

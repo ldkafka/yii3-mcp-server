@@ -43,7 +43,7 @@ use function trim;
  * deliberately separate: put {@see BearerTokenMiddleware} (or your own) in front of it. A string
  * `mcp.caller` request attribute set there is passed to the server as the caller name.
  *
- * @see https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#streamable-http
+ * @see https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#streamable-http
  */
 final class McpHttpHandler implements RequestHandlerInterface, MiddlewareInterface
 {

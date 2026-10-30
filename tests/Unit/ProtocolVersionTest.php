@@ -13,6 +13,8 @@ final class ProtocolVersionTest extends TestCase
     {
         self::assertSame(ProtocolVersion::LATEST, ProtocolVersion::SUPPORTED[0]);
         self::assertTrue(ProtocolVersion::isSupported(ProtocolVersion::LATEST));
+        self::assertSame('2025-11-25', ProtocolVersion::LATEST);
+        self::assertSame(ProtocolVersion::V2025_06_18, ProtocolVersion::negotiate(ProtocolVersion::V2025_06_18));
     }
 
     public function testNegotiationEchoesSupportedVersionsAndFallsBackOtherwise(): void

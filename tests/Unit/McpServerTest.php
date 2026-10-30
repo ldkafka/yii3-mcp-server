@@ -12,6 +12,7 @@ use YiiMcp\McpServer\Tests\Support\ArrayLogger;
 use YiiMcp\McpServer\Tests\Support\BrokenSchemaTool;
 use YiiMcp\McpServer\Tests\Support\CallerTool;
 use YiiMcp\McpServer\Tests\Support\EchoTool;
+use YiiMcp\McpServer\Tests\Support\MetaTool;
 use YiiMcp\McpServer\Tests\Support\RawArrayTool;
 use YiiMcp\McpServer\Tests\Support\StructuredTool;
 use YiiMcp\McpServer\Tests\Support\ThrowingTool;
@@ -103,6 +104,17 @@ final class McpServerTest extends TestCase
         self::assertArrayNotHasKey('outputSchema', $tools['echo']);
         self::assertSame('object', $tools['structured']['outputSchema']['type']);
         self::assertSame(['doubled'], $tools['structured']['outputSchema']['required']);
+    }
+
+    public function testToolsListSendsHintsAsBooleansAndPassesMetaThrough(): void
+    {
+        $json = (string) (new McpServer([new MetaTool(), new EchoTool()]))->handleJson('{"jsonrpc":"2.0","id":1,"method":"tools/list"}');
+        [$meta, $echo] = json_decode($json, true)['result']['tools'];
+
+        self::assertSame('Meta', $meta['title']);
+        self::assertStringContainsString('"annotations":{"title":"Meta","readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}', $json);
+        self::assertSame(['securitySchemes' => [['type' => 'oauth2', 'scopes' => ['stays:search']]]], $meta['_meta']);
+        self::assertArrayNotHasKey('_meta', $echo);
     }
 
     public function testToolsListEncodesEmptyPropertiesAsObjectAndDefaultsType(): void
@@ -214,6 +226,17 @@ final class McpServerTest extends TestCase
         self::assertSame(['echo', 'raw'], $names('reader'));
         self::assertSame(['echo', 'boom', 'raw'], $names('other'), 'a caller without a scope sees every tool');
         self::assertSame(['echo', 'boom', 'raw'], $names(null), 'no caller (stdio) sees every tool');
+    }
+
+    public function testAnyFrameworkCanDispatchADecodedBodyWithItsCaller(): void
+    {
+        $server = new McpServer([new EchoTool(), new CallerTool()], null, null, null, true, ['user-42' => ['whoami']]);
+
+        $response = $server->dispatchPayload(JsonRpc::decode('{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"whoami"}}'), 'user-42');
+        $notification = $server->dispatchPayload(JsonRpc::decode('{"jsonrpc":"2.0","method":"notifications/initialized"}'), 'user-42');
+
+        self::assertSame('user-42', $response['result']['content'][0]['text']);
+        self::assertNull($notification, 'nothing to send: the caller answers 202 with no body');
     }
 
     public function testCallOutsideTheScopeIsRefusedLikeAnUnknownTool(): void

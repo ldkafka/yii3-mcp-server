@@ -28,11 +28,12 @@ A framework for building [Model Context Protocol (MCP)](https://modelcontextprot
 - **Tool-based architecture** - Build custom tools by implementing `McpToolInterface`
 - **Simple API** - One interface (`McpToolInterface`) is all you need to create powerful AI tools
 - **Two transports** - stdio for editors that spawn a local process, and Streamable HTTP (PSR-15 handler + bearer-token middleware) for remote clients; both serve the same `McpServer`
-- **Spec-compliant core** - `initialize` with protocol version negotiation (`2024-11-05` to `2025-06-18`), `ping`, `tools/list` with annotations and `outputSchema`, `tools/call` with `isError` results, JSON-RPC batches and error codes
+- **Spec-compliant core** - `initialize` with protocol version negotiation (`2024-11-05` to `2025-11-25`), `ping`, `tools/list` with `title`, annotations, `_meta` and `outputSchema`, `tools/call` with `isError` results, JSON-RPC batches and error codes
 - **Argument validation** - `tools/call` arguments are checked against the tool's `inputSchema` (required, enum, types, ranges; lenient about numeric strings) and clear mismatches are answered with `-32602` listing the violations, before the tool runs
 - **Named tokens and per-caller scopes** - bearer tokens can be keyed by caller name; limit each caller to a list of tools, and let tools that implement `McpCallerAwareInterface` know who calls
 - **Observable** - every tool call is logged with its caller, duration and result size; failures with their exception
-- **PSR everywhere** - PSR-3 logging, PSR-7/15/17 HTTP; no framework lock-in beyond the console command
+- **PSR everywhere** - PSR-3 logging, PSR-7/15/17 HTTP; no framework lock-in: the console command is optional, and the core runs in any framework (Yii2 included) through `McpServer::dispatchPayload()`
+- **OAuth-ready** - `BearerChallenge` builds the `WWW-Authenticate` values of an OAuth-protected endpoint (401 with `resource_metadata`, 403 `insufficient_scope`)
 - **Type-safe** - Full PHP 8.1+ type declarations and PHPDoc
 - **Production-ready** - Security patterns, error handling, validation
 - **Tested** - PHPUnit suite, CI on PHP 8.1 to 8.4
@@ -45,6 +46,13 @@ A framework for building [Model Context Protocol (MCP)](https://modelcontextprot
 
 ```bash
 composer require ldkafka/yii3-mcp-server
+```
+
+The stdio command (`mcp:serve`) needs `symfony/console`, and `yiisoft/yii-console` to run it in a Yii3
+console application. Yii3 application templates already include both; otherwise:
+
+```bash
+composer require yiisoft/yii-console
 ```
 
 ### 2. Copy Configuration Templates
@@ -279,7 +287,8 @@ Or, for Claude Code, add to the project's `.mcp.json`:
 
 The same server can be exposed as a remote endpoint (`POST /mcp`) protected by a bearer token, so
 assistants on other machines can use your tools without a local PHP process. See
-[docs/HTTP_TRANSPORT.md](docs/HTTP_TRANSPORT.md).
+[docs/HTTP_TRANSPORT.md](docs/HTTP_TRANSPORT.md). It also shows how to call the core from a framework
+without PSR-7 (a Yii2 controller) and how to answer OAuth-protected requests with `BearerChallenge`.
 
 ---
 
@@ -444,7 +453,8 @@ MysqlQueryTool::isReadOnlyStatement($sql); // matches MysqlQueryTool::READ_ONLY_
 ## Requirements
 
 - **PHP:** 8.1 or higher (`ext-json`)
-- **Yii3:** yiisoft/yii-console ^2.0 for the stdio command; any PSR-15 stack for HTTP
+- **Console (optional):** symfony/console for the stdio command, and yiisoft/yii-console ^2.0 to run it in Yii3
+- **HTTP:** any PSR-15 stack for `McpHttpHandler`, or any framework through `McpServer::dispatchPayload()`
 - **PSR interfaces:** psr/log, psr/http-message, psr/http-factory, psr/http-server-handler, psr/http-server-middleware
 - **Optional:** yiisoft/db + yiisoft/db-mysql for the database tool, yiisoft/router to route the HTTP endpoint
 

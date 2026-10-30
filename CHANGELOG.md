@@ -4,6 +4,37 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-10-29
+
+### Added
+
+- **Protocol revision `2025-11-25`.** It is now the latest revision and is negotiated on
+  `initialize`; `MCP-Protocol-Version: 2025-11-25` is accepted over HTTP. For what this package
+  implements (tools over stdio and stateless HTTP POST) the revision needs no other server change:
+  the `Origin` check already answers `403`, as the revision now states. Earlier revisions are still
+  negotiated.
+- **`McpToolMetaInterface`** (`getMeta(): array`): a tool's free-form `_meta` object in `tools/list`,
+  for client-specific keys such as OpenAI's `securitySchemes`. Left out when empty.
+- **`Http\BearerChallenge`**: framework-neutral `WWW-Authenticate` values for an OAuth-protected
+  endpoint, per the MCP 2025-11-25 authorization specification, RFC 6750 and RFC 9728:
+  `unauthorized()` for a `401` (`resource_metadata`, optional `scope`, optional
+  `error="invalid_token"` and `error_description`) and `insufficientScope()` for a `403`. It only
+  words the challenge; validating tokens stays with the application.
+- **Using the core from any framework.** `docs/HTTP_TRANSPORT.md` shows a Yii2 controller calling
+  `McpServer::dispatchPayload()` with a decoded body and its caller, and an OAuth challenge example.
+
+### Changed
+
+- **The console packages are optional.** `symfony/console` and `yiisoft/yii-console` moved from
+  `require` to `suggest`, so the core installs in applications without them (a Yii2 app, for
+  example). Only the stdio command (`McpCommand`, `mcp:serve`) uses them, and it works as before
+  when they are installed. **Upgrade note:** a Yii3 application that runs `mcp:serve` and did not
+  require `yiisoft/yii-console` itself must now add it (`composer require yiisoft/yii-console`);
+  the Yii3 application templates already do.
+- **Annotation hints are sent as booleans.** `readOnlyHint`, `destructiveHint`, `idempotentHint`
+  and `openWorldHint` go out as JSON `true`/`false` whatever scalar the tool returned; a null hint
+  is left out. `title` works as before (top level and inside `annotations`).
+
 ## [1.4.0] - 2026-10-15
 
 ### Added

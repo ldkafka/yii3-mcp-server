@@ -15,11 +15,13 @@ Docker or a PHP installation on the client side.
 2. [Wiring in a Yii3 application](#wiring-in-a-yii3-application)
 3. [Other PSR-15 stacks](#other-psr-15-stacks)
 4. [Named tokens and per-caller scopes](#named-tokens-and-per-caller-scopes)
-5. [Reverse proxy](#reverse-proxy)
-6. [Testing the endpoint](#testing-the-endpoint)
-7. [Client configuration](#client-configuration)
-8. [Security checklist](#security-checklist)
-9. [Protocol notes](#protocol-notes)
+5. [Frameworks without PSR-7 (Yii2 and others)](#frameworks-without-psr-7-yii2-and-others)
+6. [OAuth resource server challenges](#oauth-resource-server-challenges)
+7. [Reverse proxy](#reverse-proxy)
+8. [Testing the endpoint](#testing-the-endpoint)
+9. [Client configuration](#client-configuration)
+10. [Security checklist](#security-checklist)
+11. [Protocol notes](#protocol-notes)
 
 ---
 
@@ -221,6 +223,87 @@ server calls `withCaller(?string $caller): static` and runs the instance it retu
 
 ---
 
+## Frameworks without PSR-7 (Yii2 and others)
+
+The core needs no PSR-7 objects and no console packages. A controller in any framework decodes the
+body, hands it to `McpServer::dispatchPayload()` with the caller it authenticated, and sends back
+what it returns. A Yii2 action, for example:
+
+```php
+use YiiMcp\McpServer\McpServer;
+use YiiMcp\McpServer\Protocol\JsonRpc;
+use YiiMcp\McpServer\Protocol\ProtocolVersion;
+
+public function actionIndex(): Response
+{
+    $response = Yii::$app->response;
+    $response->format = Response::FORMAT_RAW;
+    $version = Yii::$app->request->headers->get('MCP-Protocol-Version');
+    if ($version !== null && !ProtocolVersion::isSupported($version)) {
+        $response->statusCode = 400;            // the specification requires 400
+        return $response;
+    }
+
+    // $caller: whoever your token check authenticated (a user or token id), or null.
+    // Tools that depend on the token: scope them per request, caller => tool names.
+    $server = new McpServer($tools, $logger, scopes: [$caller => $allowedTools]);
+
+    try {
+        $payload = JsonRpc::decode(Yii::$app->request->getRawBody());
+    } catch (\JsonException $e) {
+        $response->statusCode = 400;
+        $response->content = JsonRpc::encode(JsonRpc::error(null, JsonRpc::PARSE_ERROR, 'Parse error'));
+        return $response;
+    }
+
+    $result = $server->dispatchPayload($payload, $caller);
+    if ($result === null) {                     // notifications only
+        $response->statusCode = 202;
+        return $response;
+    }
+    $response->headers->set('Content-Type', 'application/json');
+    $response->content = JsonRpc::encode($result);
+    return $response;
+}
+```
+
+`McpHttpHandler` does the same for PSR-15 stacks, plus the `Origin` allow-list (answer `403` to a
+browser origin you do not trust), the `405` for `GET` and `DELETE`, and the content-type check. A
+controller that serves the public internet should do those too. Tools get their context from their
+constructor (build them per request) or through `McpCallerAwareInterface`.
+
+---
+
+## OAuth resource server challenges
+
+When your endpoint accepts OAuth access tokens (MCP authorization, revision 2025-11-25), validating
+the token is your application's job: signature or database lookup, expiry, revocation, and that it
+was issued for this server (its `resource`). `BearerChallenge` words the answer as RFC 6750 and
+RFC 9728 describe. It returns the `WWW-Authenticate` value as a string, for any response object:
+
+```php
+use YiiMcp\McpServer\Http\BearerChallenge;
+
+$metadata = 'https://mcp.example.com/.well-known/oauth-protected-resource/mcp';
+
+// 401, no token: the client finds the authorization server through the metadata URL
+BearerChallenge::unauthorized($metadata, ['files:read']);
+// Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/mcp", scope="files:read"
+
+// 401, token unknown, expired, revoked or issued for another resource
+BearerChallenge::unauthorized($metadata, [], invalidToken: true, errorDescription: 'Token expired');
+// Bearer resource_metadata="...", error="invalid_token", error_description="Token expired"
+
+// 403, valid token without a scope the request needs: list every scope it needs
+BearerChallenge::insufficientScope($metadata, ['files:read', 'files:write']);
+// Bearer error="insufficient_scope", scope="files:read files:write", resource_metadata="..."
+```
+
+Serve the protected resource metadata document (RFC 9728) at the URL you name; it lists your
+authorization server. `BearerTokenMiddleware` (static tokens, not OAuth) is unchanged.
+
+---
+
 ## Reverse proxy
 
 Terminate TLS in front of PHP and forward only the MCP path. nginx example for a PHP-FPM upstream:
@@ -341,7 +424,7 @@ does not care how the request was authenticated.
 
 ## Protocol notes
 
-- Implements the Streamable HTTP transport of the `2025-03-26` and `2025-06-18` revisions; the
+- Implements the Streamable HTTP transport of the `2025-03-26`, `2025-06-18` and `2025-11-25` revisions; the
   `2024-11-05` revision (pre-dating Streamable HTTP) is still negotiated for clients that request it.
 - The optional server-initiated SSE stream (`GET`) is not offered; `405` is the specified answer.
 - Batches are accepted and answered in order; a batch of notifications only yields `202`.

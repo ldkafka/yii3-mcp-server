@@ -92,7 +92,26 @@ final class QueryTool implements McpToolInterface, McpToolAnnotationsInterface
 ```
 
 Annotations are advisory. Clients may use them to skip confirmation prompts for read-only tools,
-so never mark a tool `readOnlyHint` unless it really is.
+so never mark a tool `readOnlyHint` unless it really is. The four hints are always sent as JSON
+booleans (`1` becomes `true`), and a null hint is left out. Some clients want all of them set:
+OpenAI requires `readOnlyHint`, `destructiveHint` and `openWorldHint`.
+
+### Optional: `_meta`
+
+Implement `McpToolMetaInterface` to add the specification's free-form `_meta` object to the tool's
+`tools/list` entry, for keys a particular client reads. OpenAI, for example, reads the OAuth scopes
+a tool needs from `securitySchemes`:
+
+```php
+use YiiMcp\McpServer\Contract\McpToolMetaInterface;
+
+public function getMeta(): array
+{
+    return ['securitySchemes' => [['type' => 'oauth2', 'scopes' => ['files:read']]]];
+}
+```
+
+The server passes the array through unchanged and leaves `_meta` out when it is empty.
 
 ### Optional: Output Schema
 
